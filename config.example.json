@@ -1,0 +1,14 @@
+{
+  "port": 8080,
+  "host": "0.0.0.0",
+  "directory": "./music",
+  "name": "My Radio Station",
+  "random": true,
+  "debug": false,
+  "gap_ms": 500,
+  "normalize": true,
+  "standard_bitrate": "128k",
+  "standard_sample_rate": "44100",
+  "cache_dir": ".cache",
+  "cache_ttl_minutes": 60
+}

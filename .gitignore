@@ -1,0 +1,13 @@
+build/*
+!build/.gitkeep
+/.idea
+/.vscode
+/music
+*.exe
+.cache
+ffmpeg/linux/*
+ffmpeg/windows/*
+ffmpeg/macos/*
+!ffmpeg/linux/.gitkeep
+!ffmpeg/windows/.gitkeep
+!ffmpeg/macos/.gitkeep
