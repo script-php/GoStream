@@ -379,41 +379,6 @@ start http://localhost:8090/stream.mp3
 curl http://localhost:8090/info
 ```
 
-## Docker Usage
-eployment
-
-### Running Directly
-
-The compiled binary can be run directly on any system with the required dependencies:
-
-```bash
-./gostream -c config.json
-```
-
-### Docker Deployment
-
-If you want to deploy GoStream in Docker, you can create your own Dockerfile:
-
-```dockerfile
-FROM golang:1.20 AS builder
-WORKDIR /src
-COPY . .
-RUN go build -o gostream .
-
-FROM alpine:latest
-WORKDIR /app
-COPY --from=builder /src/gostream /app/
-VOLUME ["/music"]
-EXPOSE 8090
-ENTRYPOINT ["/app/gostream"]
-CMD ["-d", "/music"]
-```
-
-Build and run:
-
-```bash
-docker build -t gostream .
-docker run -d -p 8090:8090 -v /path/to/music:/music gostream
 
 ## Requirements
 
