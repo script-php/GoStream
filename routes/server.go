@@ -172,7 +172,7 @@ func GetMetrics(ctx echo.Context) error {
 	})
 }
 
-// GetSongsList returns a list of all songs with their index numbers
+// GetSongsList returns a list of all songs with their hash IDs
 func GetSongsList(ctx echo.Context) error {
 	mp3FilePaths, err := modules.GetMp3FilePaths()
 	if err != nil {
@@ -184,21 +184,22 @@ func GetSongsList(ctx echo.Context) error {
 	}
 
 	type SongItem struct {
-		Index  int    `json:"index"`
-		Title  string `json:"title"`
-		Artist string `json:"artist"`
+		Hash     string `json:"hash"`
+		Title    string `json:"title"`
+		Artist   string `json:"artist"`
 		Filename string `json:"filename"`
 	}
 
 	var songs []SongItem
 
-	for i, filePath := range mp3FilePaths {
+	for _, filePath := range mp3FilePaths {
+		hash := modules.GenerateSongHash(filePath)
 		tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 		if err != nil {
 			modules.Logger.Error(err)
 			// If we can't read ID3 tags, use filename
 			songs = append(songs, SongItem{
-				Index:    i,
+				Hash:     hash,
 				Title:    filepath.Base(filePath),
 				Artist:   "Unknown",
 				Filename: filepath.Base(filePath),
@@ -217,7 +218,7 @@ func GetSongsList(ctx echo.Context) error {
 		}
 
 		songs = append(songs, SongItem{
-			Index:    i,
+			Hash:     hash,
 			Title:    title,
 			Artist:   artist,
 			Filename: filepath.Base(filePath),
