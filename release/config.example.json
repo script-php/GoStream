@@ -6,7 +6,6 @@
   "random": true,
   "debug": false,
   "gap_ms": 500,
-  "normalize": true,
   "standard_bitrate": "128k",
   "standard_sample_rate": "44100",
   "cache_dir": ".cache",

@@ -8,7 +8,7 @@ GoStream is a lightweight MP3 streaming server written in Go. It provides real-t
 - **Synchronized playback** - Multiple clients receive the same audio stream in sync
 - **Playback modes** - Support for both random and sequential track playback
 - **Skip/Next controls** - API endpoints to skip songs and preview the next track
-- **Audio normalization** - Optional FFmpeg-based audio normalization to standardized bitrate and sample rate
+- **Audio normalization** - Automatic FFmpeg-based audio normalization to standardized bitrate and sample rate for consistent streaming
 - **Stream metadata** - ID3 tag parsing for track title and artist information
 - **Icecast compatibility** - Stats endpoint compatible with Icecast format for player integration
 - **Configurable gap/silence** - Set custom silence duration between songs (default 500ms)
@@ -48,7 +48,6 @@ The server will start on port 8090 by default.
 - `-debug` - Enable debug mode for detailed logging
 - `-n string` - Server name (default: "GoStream")
 - `-gap int` - Gap/silence between songs in milliseconds (default: 500)
-- `-normalize` - Enable audio normalization to standard bitrate/sample rate using FFmpeg
 - `-c string` - Load configuration from JSON file or URL
 - `-h` - Show help information
 
@@ -72,7 +71,6 @@ Create a `config.json` file:
   "random": false,
   "debug": false,
   "gap_ms": 500,
-  "normalize": false,
   "standard_bitrate": "128k",
   "standard_sample_rate": "44100",
   "cache_dir": ".cache",
@@ -101,13 +99,12 @@ Create a `config.json` file:
 - `random` (bool) - Enable random playback mode
 - `debug` (bool) - Enable debug mode
 - `gap_ms` (int) - Gap/silence between songs in milliseconds
-- `normalize` (bool) - Enable audio normalization
 - `standard_bitrate` (string) - Bitrate for normalized audio (e.g., "128k", "192k", "256k") - default: "128k"
 - `standard_sample_rate` (string) - Sample rate for normalized audio (e.g., "44100", "48000") - default: "44100"
 - `cache_dir` (string) - Directory to store cached normalized files - default: ".cache"
 - `cache_ttl_minutes` (int) - Cache time-to-live in minutes (files older than this are deleted, 0 = no cleanup) - default: 10
 
-**Note:** Command-line arguments take precedence over config file values.
+**Note:** Audio normalization is always enabled for consistent stream quality. All songs are automatically normalized to the standard bitrate and sample rate. Command-line arguments take precedence over config file values.
 
 ### Cache Management
 
@@ -160,9 +157,6 @@ Cache cleanup: Deleted 3 files, freed 8.45 MB
 # Debug mode with custom gap between songs
 ./gostream -d /music -debug -gap 1000
 
-# Enable audio normalization
-./gostream -d /music -normalize
-
 # Using local config file
 ./gostream -c config.json
 
@@ -173,7 +167,7 @@ Cache cleanup: Deleted 3 files, freed 8.45 MB
 ./gostream -c config.json -p 8080 -r
 
 # All features enabled (command-line)
-./gostream -d /music -p 8080 -r -n "My Station" -debug -gap 500 -normalize
+./gostream -d /music -p 8080 -r -n "My Station" -debug -gap 500
 ```
 
 ## API Endpoints
@@ -384,19 +378,23 @@ curl http://localhost:8090/info
 
 - Go 1.20 or later
 - MP3 files in the specified directory
-- FFmpeg (bundled for Windows and Linux, or available in system PATH)
+- FFmpeg (either bundled in `ffmpeg/` folder OR available in system PATH)
+
+**Audio normalization is always enabled**, so FFmpeg is required:
+- **Windows & Linux:** Bundled FFmpeg binaries are included in the `ffmpeg/` folder
+- **macOS or custom:** Ensure FFmpeg is installed and available in system PATH
+  - Install via Homebrew: `brew install ffmpeg`
+  - Or download from: https://ffmpeg.org/download.html
 
 ## Optional Requirements
 
-- FFmpeg - For audio normalization feature (included as bundled binaries for Windows and Linux)
+- Debug mode for detailed logging
 
 ## Dependencies
 
 - Echo v4 - HTTP web framework
 - mp3lib - MP3 file processing
 - id3v2 - ID3 tag reading
-
-## License
 
 This project is licensed under the MIT License.
 

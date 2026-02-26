@@ -159,18 +159,16 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 		return
 	}
 	
-	// Transcode to standard format if normalization is enabled
-	if Config.Normalize {
-		transcodedPath, err := TranscodeAudio(filePath)
-		if err == nil {
-			filePath = transcodedPath
-		}
-		
-		// Always pre-transcode the next song
-		nextFilePath, nextExists := FindSongByHash(nextHash)
-		if nextExists {
-			go PreTranscodeAudioAsync(nextFilePath)
-		}
+	// Transcode to standard format for consistent stream quality
+	transcodedPath, err := TranscodeAudio(filePath)
+	if err == nil {
+		filePath = transcodedPath
+	}
+	
+	// Always pre-transcode the next song
+	nextFilePath, nextExists := FindSongByHash(nextHash)
+	if nextExists {
+		go PreTranscodeAudioAsync(nextFilePath)
 	}
 	
 	file, err := os.Open(filePath)
@@ -562,8 +560,6 @@ func InitReader() {
 	}()
 	Logger.Info(fmt.Sprintf("Music directory is %s.", Config.Directory))
 	
-	// Start cache cleanup routine if normalization is enabled
-	if Config.Normalize {
-		StartCacheCleanupRoutine()
-	}
+	// Start cache cleanup routine for normalized audio cache
+	StartCacheCleanupRoutine()
 }

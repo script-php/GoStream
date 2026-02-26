@@ -25,7 +25,6 @@ type IConfig struct {
 	Time               int64
 	Version            string
 	GapMs              int    // Gap/silence between songs in milliseconds
-	Normalize          bool   // Normalize all audio to same bitrate/samplerate using ffmpeg
 	StandardBitrate    string // Bitrate for audio normalization (e.g., "128k")
 	StandardSampleRate string // Sample rate for audio normalization (e.g., "44100")
 	CacheDir           string // Directory to store cached normalized files
@@ -49,7 +48,6 @@ type JSONConfig struct {
 	Debug              bool   `json:"debug"`
 	Name               string `json:"name"`
 	GapMs              int    `json:"gap_ms"`
-	Normalize          bool   `json:"normalize"`
 	StandardBitrate    string `json:"standard_bitrate"`
 	StandardSampleRate string `json:"standard_sample_rate"`
 	CacheDir           string `json:"cache_dir"`
@@ -127,7 +125,6 @@ func init() {
 	var help bool
 	var name string
 	var gap int
-	var normalize bool
 	var configSource string
 	var standardBitrate string = "128k"
 	var standardSampleRate string = "44100"
@@ -146,7 +143,6 @@ func init() {
 	flag.BoolVar(&debug, "debug", false, "enable debug mode for server")
 	flag.StringVar(&directory, "d", root, "directory to play")
 	flag.IntVar(&gap, "gap", 500, "gap/silence between songs in milliseconds")
-	flag.BoolVar(&normalize, "normalize", false, "normalize audio to standard bitrate/samplerate using ffmpeg")
 	flag.StringVar(&configSource, "c", "", "config file or URL (e.g., config.json or https://example.com/config.json)")
 	flag.BoolVar(&help, "h", false, "show help information")
 
@@ -218,9 +214,6 @@ func init() {
 		if jsonConfig.Debug {
 			debug = true
 		}
-		if jsonConfig.Normalize {
-			normalize = true
-		}
 	}
 
 	directory, err = filepath.Abs(directory)
@@ -239,7 +232,6 @@ func init() {
 		Name:               name,
 		Version:            conf.CodeVersion,
 		GapMs:              gap,
-		Normalize:          normalize,
 		CacheTTLMinutes:    cacheTTLMinutes,
 		StandardBitrate:    standardBitrate,
 		StandardSampleRate: standardSampleRate,

@@ -54,11 +54,8 @@ func IsCached(originalPath string) bool {
 
 // TranscodeAudio transcodes an MP3 file to standard format
 // Returns the path to the normalized file (either cached or original)
+// Note: Normalization is always enabled for consistent stream quality
 func TranscodeAudio(filePath string) (string, error) {
-	if !Config.Normalize {
-		return filePath, nil
-	}
-
 	// Check if already cached
 	cachedPath := GetCachedPath(filePath)
 	if IsCached(filePath) {

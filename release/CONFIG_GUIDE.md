@@ -65,12 +65,6 @@ Example usage:
 
 ## Audio Normalization
 
-### normalize
-- **Type**: `boolean`
-- **Default**: `false`
-- **Description**: Enable audio normalization using FFmpeg. Converts all audio to standard bitrate/sample rate for consistent streaming
-- **Example**: `"normalize": true`
-
 ### standard_bitrate
 - **Type**: `string`
 - **Default**: `"128k"`
