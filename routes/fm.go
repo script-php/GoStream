@@ -36,6 +36,38 @@ func GetFMStream(ctx echo.Context) error {
 	res.Header().Set("X-Content-Type-Options", "nosniff")
 	res.Header().Set("Transfer-Encoding", "chunked")
 	res.Header().Set("Content-Type", "audio/mpeg")
+	
+	// Set Shoutcast metadata headers
+	// icy-name from station name
+	if modules.Config.Name != "" {
+		res.Header().Set("icy-name", modules.Config.Name)
+	}
+	// icy-genre from config
+	if modules.Config.Genre != "" {
+		res.Header().Set("icy-genre", modules.Config.Genre)
+	}
+	// icy-url from config
+	if modules.Config.URL != "" {
+		res.Header().Set("icy-url", modules.Config.URL)
+	}
+	// icy-br: extract bitrate number without 'k' suffix (e.g., "128k" -> "128")
+	if modules.Config.StandardBitrate != "" {
+		br := strings.TrimSuffix(modules.Config.StandardBitrate, "k")
+		res.Header().Set("icy-br", br)
+	}
+	// icy-sr from standard sample rate
+	if modules.Config.StandardSampleRate != "" {
+		res.Header().Set("icy-sr", modules.Config.StandardSampleRate)
+	}
+	// icy-pub: always 1 (stream is public)
+	res.Header().Set("icy-pub", "1")
+	// icy-notice1 and icy-notice2 from config
+	if modules.Config.Notice1 != "" {
+		res.Header().Set("icy-notice1", modules.Config.Notice1)
+	}
+	if modules.Config.Notice2 != "" {
+		res.Header().Set("icy-notice2", modules.Config.Notice2)
+	}
 
 	init := false
 	order := 0

@@ -10,5 +10,9 @@
   "standard_bitrate": "128k",
   "standard_sample_rate": "44100",
   "cache_dir": ".cache",
-  "cache_ttl_minutes": 60
+  "cache_ttl_minutes": 60,
+  "genre": "Various",
+  "url": "https://example.com",
+  "notice1": "Stream powered by GoStream<BR>",
+  "notice2": "Enjoy the music!<BR>"
 }
