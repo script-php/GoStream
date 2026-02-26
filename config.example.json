@@ -14,5 +14,6 @@
   "genre": "Various",
   "url": "https://example.com",
   "notice1": "Stream powered by GoStream<BR>",
-  "notice2": "Enjoy the music!<BR>"
+  "notice2": "Enjoy the music!<BR>",
+  "meta_interval": 8192
 }

@@ -11,6 +11,31 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// BuildIcecastMetadata creates an ICY metadata block according to Shoutcast protocol
+// Metadata format: [1-byte-length][metadata-string][padding]
+// Length is in 16-byte chunks, not bytes
+func BuildIcecastMetadata(filename, url string) []byte {
+	// Build metadata string: StreamTitle='Filename';StreamUrl='url';
+	metadataStr := fmt.Sprintf("StreamTitle='%s';StreamUrl='%s';", filename, url)
+	
+	// Calculate length in 16-byte blocks (rounded up)
+	metadataLen := len(metadataStr)
+	blockCount := (metadataLen + 15) / 16 // Round up to nearest 16-byte block
+	
+	// Create full metadata block with 1-byte length header + metadata + padding
+	totalLen := 1 + (blockCount * 16)
+	metadataBlock := make([]byte, totalLen)
+	
+	// First byte is the length in 16-byte blocks
+	metadataBlock[0] = byte(blockCount)
+	
+	// Copy metadata string after the length byte
+	copy(metadataBlock[1:], metadataStr)
+	
+	// Rest is null-padded (already zero-initialized)
+	return metadataBlock
+}
+
 func GetFMStream(ctx echo.Context) error {
 
 	ip := GetRealIP(ctx.Request())
@@ -69,8 +94,21 @@ func GetFMStream(ctx echo.Context) error {
 		res.Header().Set("icy-notice2", modules.Config.Notice2)
 	}
 
+	// Check if client wants metadata
+	wantMetadata := strings.EqualFold(ctx.Request().Header.Get("Icy-MetaData"), "1")
+	metaintInterval := modules.Config.MetaInterval
+	if metaintInterval <= 0 {
+		metaintInterval = 8192 // Default if not configured
+	}
+	
+	if wantMetadata {
+		// Set icy-metaint header to tell client where metadata blocks are
+		res.Header().Set("icy-metaint", fmt.Sprintf("%d", metaintInterval))
+	}
+
 	init := false
 	order := 0
+	sinceMetaBlock := 0 // Track bytes sent since last metadata (Icecast style)
 
 	for {
 		var targetBuffer []byte
@@ -99,14 +137,58 @@ func GetFMStream(ctx echo.Context) error {
 		
 		order = currentOrder
 
-		n, err := res.Write(targetBuffer)
-		if err != nil {
-			modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
-			return nil
+		// Process buffer with Icecast-style metadata injection
+		if wantMetadata {
+			bufLen := len(targetBuffer)
+			offset := 0
+
+			for offset < bufLen {
+				// Calculate how many bytes until metadata boundary
+				remaining := metaintInterval - sinceMetaBlock
+				
+				// How much of this buffer to send
+				toSend := remaining
+				if offset+toSend > bufLen {
+					toSend = bufLen - offset
+				}
+
+				// Send audio chunk (up to metadata boundary)
+				if toSend > 0 {
+					chunk := targetBuffer[offset : offset+toSend]
+					n, err := res.Write(chunk)
+					if err != nil {
+						modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
+						return nil
+					}
+					modules.AddBytesStreamed(int64(n))
+					sinceMetaBlock += n
+					offset += n
+				}
+
+				// If we hit metadata boundary, inject metadata
+				if sinceMetaBlock >= metaintInterval && offset < bufLen {
+					musicInfo := modules.MusicReader.GetMusicInfo()
+					if musicInfo != nil && musicInfo.Filename != "" {
+						metadata := BuildIcecastMetadata(musicInfo.Filename, musicInfo.Url)
+						_, err := res.Write(metadata)
+						if err != nil {
+							modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
+							return nil
+						}
+						modules.AddBytesStreamed(int64(len(metadata)))
+					}
+					sinceMetaBlock = 0 // Reset for next interval
+				}
+			}
+		} else {
+			// No metadata requested, stream normally
+			n, err := res.Write(targetBuffer)
+			if err != nil {
+				modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
+				return nil
+			}
+			modules.AddBytesStreamed(int64(n))
 		}
-		
-		// Track bandwidth
-		modules.AddBytesStreamed(int64(n))
 
 		time.Sleep(time.Millisecond * time.Duration(timeout))
 	}
