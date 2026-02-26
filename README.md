@@ -186,7 +186,7 @@ Cache cleanup: Deleted 3 files, freed 8.45 MB
 - `GET /next` - Get information about the next song
 - `GET /status` - Get current stream status and now playing track
 - `GET /metrics` - Detailed system and streaming metrics (memory, GC, bandwidth)
-- `GET /songs` - List all available songs with their index numbers
+- `GET /songs` - List all available songs with their hash IDs
 
 ## API Response Examples
 

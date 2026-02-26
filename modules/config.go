@@ -30,6 +30,12 @@ type IConfig struct {
 	StandardSampleRate string // Sample rate for audio normalization (e.g., "44100")
 	CacheDir           string // Directory to store cached normalized files
 	CacheTTLMinutes    int    // Cache time-to-live in minutes (0 = no cleanup)
+	// Shoutcast metadata
+	Genre              string // Shoutcast genre (icy-genre header)
+	URL                string // Shoutcast/Stream URL (icy-url header)
+	Notice1            string // Shoutcast notice 1 (icy-notice1 header)
+	Notice2            string // Shoutcast notice 2 (icy-notice2 header)
+	MetaInterval       int    // Metadata interval in bytes (default 8192)
 }
 
 var Config *IConfig
@@ -48,6 +54,12 @@ type JSONConfig struct {
 	StandardSampleRate string `json:"standard_sample_rate"`
 	CacheDir           string `json:"cache_dir"`
 	CacheTTLMinutes    int    `json:"cache_ttl_minutes"`
+	// Shoutcast metadata
+	Genre              string `json:"genre"`
+	URL                string `json:"url"`
+	Notice1            string `json:"notice1"`
+	Notice2            string `json:"notice2"`
+	MetaInterval       int    `json:"meta_interval"`
 }
 
 // LoadConfigFromFile loads configuration from a local JSON file
@@ -121,6 +133,11 @@ func init() {
 	var standardSampleRate string = "44100"
 	var cacheDir string = ".cache"
 	var cacheTTLMinutes int = 10
+	var genre string = ""
+	var url string = ""
+	var notice1 string = ""
+	var notice2 string = ""
+	var metaInterval int = 8192
 
 	flag.StringVar(&name, "n", "GoStream", "server name")
 	flag.IntVar(&port, "p", 8090, "server port number")
@@ -177,6 +194,22 @@ func init() {
 		if jsonConfig.CacheTTLMinutes != 0 {
 			cacheTTLMinutes = jsonConfig.CacheTTLMinutes
 		}
+		// Shoutcast metadata
+		if jsonConfig.Genre != "" {
+			genre = jsonConfig.Genre
+		}
+		if jsonConfig.URL != "" {
+			url = jsonConfig.URL
+		}
+		if jsonConfig.Notice1 != "" {
+			notice1 = jsonConfig.Notice1
+		}
+		if jsonConfig.Notice2 != "" {
+			notice2 = jsonConfig.Notice2
+		}
+		if jsonConfig.MetaInterval > 0 {
+			metaInterval = jsonConfig.MetaInterval
+		}
 		
 		// Boolean flags - only override if they're true in config
 		if jsonConfig.Random {
@@ -211,6 +244,11 @@ func init() {
 		StandardBitrate:    standardBitrate,
 		StandardSampleRate: standardSampleRate,
 		CacheDir:           cacheDir,
+		Genre:              genre,
+		URL:                url,
+		Notice1:            notice1,
+		Notice2:            notice2,
+		MetaInterval:       metaInterval,
 	}
 }
 

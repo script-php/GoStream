@@ -2,10 +2,13 @@ package modules
 
 import (
 	_ "embed"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,13 +17,19 @@ import (
 	"github.com/dmulholl/mp3lib"
 )
 
+// Global map to store hash -> filepath mapping
+var SongHashMap = &sync.Map{}
+
+// Global list of sorted song hashes
+var SortedSongHashes []string
+
 type IMusicReader struct {
 	InitialFrame int
 	UnitFrame    int
 
-	Index          int
-	CachedNextIndex int  // Cache the predicted next index to keep it consistent
-	File           *os.File
+	CurrentSongHash  string // Current song hash (instead of index)
+	CachedNextHash   string // Cache the predicted next hash (instead of index)
+	File             *os.File
 
 	Store          *sync.Map
 	BufferStoreKey string
@@ -50,8 +59,8 @@ var MusicReader = IMusicReader{
 	InitialFrame: 500, // Number of frames to read for initial buffer (should be enough to fill Icecast buffer and prevent underflow at start)
 	UnitFrame:    50, // Number of frames to read for each buffer unit
 
-	Index:           0, // Current index in the playlist
-	CachedNextIndex: -1, // Cache for the next index prediction, -1 means not set
+	CurrentSongHash: "", // Current song hash
+	CachedNextHash:  "", // Cache for the next hash prediction
 	File:            nil, // Currently open file handle for the song being read
 
 	Store:          &sync.Map{}, // Thread-safe store for sharing data between reader and routes
@@ -66,51 +75,89 @@ type IMusicReaderStoreData struct {
 	Order         int
 }
 
-// GetNextMusicIndex calculates what the next music index would be
-func (musicReader *IMusicReader) GetNextMusicIndex(mp3FilePaths []string) int {
-	if len(mp3FilePaths) == 0 {
-		return 0
+// GenerateSongHash generates a unique hash for a song filepath
+func GenerateSongHash(filePath string) string {
+	hash := md5.Sum([]byte(filePath))
+	return hex.EncodeToString(hash[:])
+}
+
+// FindSongByHash finds the filepath for a given song hash
+func FindSongByHash(hash string) (string, bool) {
+	value, ok := SongHashMap.Load(hash)
+	if !ok {
+		return "", false
+	}
+	return value.(string), true
+}
+
+// GetNextMusicHash calculates what the next music hash would be
+func (musicReader *IMusicReader) GetNextMusicHash(songHashes []string) string {
+	if len(songHashes) == 0 {
+		return ""
+	}
+	
+	currentIndex := -1
+	for i, hash := range songHashes {
+		if hash == musicReader.CurrentSongHash {
+			currentIndex = i
+			break
+		}
 	}
 	
 	if Config.Random {
-		return rand.Intn(len(mp3FilePaths))
+		randomIndex := rand.Intn(len(songHashes))
+		return songHashes[randomIndex]
 	} else {
-		nextIndex := musicReader.Index + 1
-		if nextIndex >= len(mp3FilePaths) {
+		nextIndex := currentIndex + 1
+		if currentIndex == -1 || nextIndex >= len(songHashes) {
 			nextIndex = 0
 		}
-		return nextIndex
+		return songHashes[nextIndex]
 	}
 }
 
 func (musicReader *IMusicReader) SelectNextMusic() {
-	mp3FilePaths, err := GetMp3FilePaths()
+	_, err := GetMp3FilePaths()
 	if err != nil {
 		Logger.Error(err)
 		return
 	}
 	
-	// Use cached next index if available (from /next prediction or previous song)
+	// Use cached next hash if available (from /next prediction or previous song)
 	// Otherwise calculate it
-	cachedIndex := musicReader.GetCachedNextIndex()
-	if cachedIndex >= 0 && cachedIndex < len(mp3FilePaths) {
-		MusicReader.Index = cachedIndex
+	if musicReader.CachedNextHash != "" {
+		MusicReader.CurrentSongHash = musicReader.CachedNextHash
 	} else {
 		if Config.Random {
-			MusicReader.Index = rand.Intn(len(mp3FilePaths))
+			randomIndex := rand.Intn(len(SortedSongHashes))
+			MusicReader.CurrentSongHash = SortedSongHashes[randomIndex]
 		} else {
-			MusicReader.Index += 1
-			if MusicReader.Index >= len(mp3FilePaths) {
-				MusicReader.Index = 0
+			// Find current index and move to next
+			currentIndex := -1
+			for i, hash := range SortedSongHashes {
+				if hash == musicReader.CurrentSongHash {
+					currentIndex = i
+					break
+				}
 			}
+			nextIndex := currentIndex + 1
+			if currentIndex == -1 || nextIndex >= len(SortedSongHashes) {
+				nextIndex = 0
+			}
+			MusicReader.CurrentSongHash = SortedSongHashes[nextIndex]
 		}
 	}
 	
-	// Cache the next index for after this song
-	nextIndex := musicReader.GetNextMusicIndex(mp3FilePaths)
-	musicReader.SetCachedNextIndex(nextIndex)
+	// Cache the next hash for after this song
+	nextHash := musicReader.GetNextMusicHash(SortedSongHashes)
+	musicReader.SetCachedNextHash(nextHash)
 
-	filePath := mp3FilePaths[MusicReader.Index]
+	filePath, exists := FindSongByHash(musicReader.CurrentSongHash)
+	if !exists {
+		Logger.Error(fmt.Sprintf("Could not find file for hash %s", musicReader.CurrentSongHash))
+		musicReader.SelectNextMusic()
+		return
+	}
 	
 	// Transcode to standard format if normalization is enabled
 	if Config.Normalize {
@@ -119,9 +166,11 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 			filePath = transcodedPath
 		}
 		
-		// Always pre-transcode the next song (from any song in list, check if cached, transcode if needed)
-		nextFilePath := mp3FilePaths[nextIndex]
-		go PreTranscodeAudioAsync(nextFilePath)
+		// Always pre-transcode the next song
+		nextFilePath, nextExists := FindSongByHash(nextHash)
+		if nextExists {
+			go PreTranscodeAudioAsync(nextFilePath)
+		}
 	}
 	
 	file, err := os.Open(filePath)
@@ -222,24 +271,28 @@ func (musicReader *IMusicReader) GetMusicInfo() *IMusicInfo {
 
 // GetNextMusicInfo returns info about the next song without loading it
 func (musicReader *IMusicReader) GetNextMusicInfo() *IMusicInfo {
-	mp3FilePaths, err := GetMp3FilePaths()
+	_, err := GetMp3FilePaths()
 	if err != nil {
 		Logger.Error(err)
 		return nil
 	}
 	
-	if len(mp3FilePaths) == 0 {
+	if len(SortedSongHashes) == 0 {
 		return nil
 	}
 	
-	// Get or calculate the cached next index
-	cachedIndex := musicReader.GetCachedNextIndex()
-	if cachedIndex < 0 || cachedIndex >= len(mp3FilePaths) {
-		cachedIndex = musicReader.GetNextMusicIndex(mp3FilePaths)
-		musicReader.SetCachedNextIndex(cachedIndex)
+	// Get or calculate the cached next hash
+	nextHash := musicReader.GetCachedNextHash()
+	if nextHash == "" {
+		nextHash = musicReader.GetNextMusicHash(SortedSongHashes)
+		musicReader.SetCachedNextHash(nextHash)
 	}
 	
-	nextFilePath := mp3FilePaths[cachedIndex]
+	nextFilePath, exists := FindSongByHash(nextHash)
+	if !exists {
+		Logger.Error(fmt.Sprintf("Could not find file for hash %s", nextHash))
+		return nil
+	}
 	
 	// Extract metadata without loading the file
 	tag, err := id3v2.Open(nextFilePath, id3v2.Options{Parse: true})
@@ -310,18 +363,18 @@ func (musicReader *IMusicReader) SetBufferStoreData(data IMusicReaderStoreData) 
 	musicReader.Store.Store(musicReader.BufferStoreKey, data)
 }
 
-// Thread-safe getter for CachedNextIndex
-func (musicReader *IMusicReader) GetCachedNextIndex() int {
+// Thread-safe getter for CachedNextHash
+func (musicReader *IMusicReader) GetCachedNextHash() string {
 	musicReader.Lock.RLock()
 	defer musicReader.Lock.RUnlock()
-	return musicReader.CachedNextIndex
+	return musicReader.CachedNextHash
 }
 
-// Thread-safe setter for CachedNextIndex
-func (musicReader *IMusicReader) SetCachedNextIndex(index int) {
+// Thread-safe setter for CachedNextHash
+func (musicReader *IMusicReader) SetCachedNextHash(hash string) {
 	musicReader.Lock.Lock()
 	defer musicReader.Lock.Unlock()
-	musicReader.CachedNextIndex = index
+	musicReader.CachedNextHash = hash
 }
 
 
@@ -458,13 +511,17 @@ func (musicReader *IMusicReader) StartLoop() {
 }
 
 func GetMp3FilePaths() ([]string, error) {
-	var mp3Files []string
+	type fileInfo struct {
+		path    string
+		modTime time.Time
+	}
+	var mp3Files []fileInfo
 	err := filepath.Walk(Config.Directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".mp3") {
-			mp3Files = append(mp3Files, path)
+			mp3Files = append(mp3Files, fileInfo{path, info.ModTime()})
 		}
 		return nil
 	})
@@ -476,7 +533,27 @@ func GetMp3FilePaths() ([]string, error) {
 		Logger.Error("There are no MP3 files in the music directory.")
 		return nil, fmt.Errorf("no mp3 files found in %s", Config.Directory)
 	}
-	return mp3Files, nil
+
+	// Sort alphabetically by path
+	sort.Slice(mp3Files, func(i, j int) bool {
+		return mp3Files[i].path < mp3Files[j].path
+	})
+
+	// Extract paths and generate hashes
+	result := make([]string, len(mp3Files))
+	hashes := make([]string, len(mp3Files))
+	
+	for i, f := range mp3Files {
+		result[i] = f.path
+		hash := GenerateSongHash(f.path)
+		hashes[i] = hash
+		SongHashMap.Store(hash, f.path)
+	}
+	
+	// Store sorted hashes globally
+	SortedSongHashes = hashes
+	
+	return result, nil
 }
 
 func InitReader() {
