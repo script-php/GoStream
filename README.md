@@ -29,6 +29,19 @@ go build
 
 The binary will be created as `gostream` (or `gostream.exe` on Windows).
 
+### Getting FFmpeg Binaries
+
+**Important:** FFmpeg binaries are not included in the source code repository. You have two options:
+
+1. **Use pre-built release package** (Recommended)
+   - Download from [GitHub Releases](https://github.com/script-php/GoStream/releases)
+   - Includes compiled binary + FFmpeg binaries + config
+
+2. **Build from source and add FFmpeg**
+   - After building, you need to obtain FFmpeg:
+     - **Windows/Linux:** Download from [FFmpeg.org](https://ffmpeg.org/download.html) and place in `ffmpeg/` folder
+     - **macOS/all platforms:** Install via system (e.g., `brew install ffmpeg`)
+
 ## Usage
 
 ### Basic Usage
