@@ -232,3 +232,56 @@ func GetSongsList(ctx echo.Context) error {
 		"songs":  songs,
 	})
 }
+
+// SetNextSong sets the next song to be played by its hash
+func SetNextSong(ctx echo.Context) error {
+	hash := ctx.QueryParam("hash")
+	
+	if hash == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "hash parameter is required",
+		})
+	}
+	
+	// Verify the hash exists in our song collection
+	filePath, exists := modules.FindSongByHash(hash)
+	if !exists {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "song hash not found",
+		})
+	}
+	
+	// Set the cached next hash
+	modules.MusicReader.CachedNextHash = hash
+	
+	// Pre-transcode the song in background so it's ready when it plays
+	go modules.PreTranscodeAudioAsync(filePath)
+	
+	// Get info about the song we just set
+	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
+	title := filepath.Base(filePath)
+	artist := "Unknown"
+	
+	if err == nil {
+		if t := tag.Title(); t != "" {
+			title = t
+		}
+		if a := tag.Artist(); a != "" {
+			artist = a
+		}
+		tag.Close()
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "next song set",
+		"next_song": map[string]interface{}{
+			"hash":     hash,
+			"title":    title,
+			"artist":   artist,
+			"filename": filepath.Base(filePath),
+		},
+	})
+}

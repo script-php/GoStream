@@ -12,6 +12,7 @@ func InitRoutes(e *echo.Echo) {
 	e.GET("/skip", SkipSong)
 	e.GET("/status", GetStreamStatus)
 	e.GET("/next", GetNextSong)
+	e.POST("/next/set", SetNextSong)
 	e.GET("/songs", GetSongsList)
 	e.GET("/metrics", GetMetrics)
 	e.GET("/", GetFMStream)
