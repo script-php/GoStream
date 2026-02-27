@@ -30,6 +30,7 @@ type IMusicReader struct {
 	CurrentSongHash  string // Current song hash (instead of index)
 	CachedNextHash   string // Cache the predicted next hash (instead of index)
 	File             *os.File
+	Playlist         []string // Queue of song hashes to play
 
 	Store          *sync.Map
 	BufferStoreKey string
@@ -123,11 +124,11 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 		return
 	}
 	
-	// Use cached next hash if available (from /next prediction or previous song)
-	// Otherwise calculate it
+	// Use cached next hash as current song if available, otherwise calculate it
 	if musicReader.CachedNextHash != "" {
 		MusicReader.CurrentSongHash = musicReader.CachedNextHash
 	} else {
+		// Calculate next song based on random or sequential mode
 		if Config.Random {
 			randomIndex := rand.Intn(len(SortedSongHashes))
 			MusicReader.CurrentSongHash = SortedSongHashes[randomIndex]
@@ -148,8 +149,18 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 		}
 	}
 	
-	// Cache the next hash for after this song
-	nextHash := musicReader.GetNextMusicHash(SortedSongHashes)
+	// Determine the NEXT song to be cached and pre-transcoded
+	// Priority 1: Check if there are songs in the playlist
+	var nextHash string
+	if len(musicReader.Playlist) > 0 {
+		musicReader.Lock.Lock()
+		nextHash = musicReader.Playlist[0]
+		musicReader.Playlist = musicReader.Playlist[1:] // Remove from playlist
+		musicReader.Lock.Unlock()
+	} else {
+		// Priority 2: Calculate next song based on random or sequential mode
+		nextHash = musicReader.GetNextMusicHash(SortedSongHashes)
+	}
 	musicReader.SetCachedNextHash(nextHash)
 
 	filePath, exists := FindSongByHash(musicReader.CurrentSongHash)
@@ -165,7 +176,7 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 		filePath = transcodedPath
 	}
 	
-	// Always pre-transcode the next song
+	// Always pre-transcode the next song (whether it's from playlist or random/sequential)
 	nextFilePath, nextExists := FindSongByHash(nextHash)
 	if nextExists {
 		go PreTranscodeAudioAsync(nextFilePath)
@@ -373,6 +384,68 @@ func (musicReader *IMusicReader) SetCachedNextHash(hash string) {
 	musicReader.Lock.Lock()
 	defer musicReader.Lock.Unlock()
 	musicReader.CachedNextHash = hash
+}
+
+// AddToPlaylist adds a song hash to the end of the playlist
+func (musicReader *IMusicReader) AddToPlaylist(hash string) {
+	musicReader.Lock.Lock()
+	defer musicReader.Lock.Unlock()
+	musicReader.Playlist = append(musicReader.Playlist, hash)
+}
+
+// RemoveFromPlaylist removes a song at a specific position from the playlist
+func (musicReader *IMusicReader) RemoveFromPlaylist(index int) bool {
+	musicReader.Lock.Lock()
+	defer musicReader.Lock.Unlock()
+	
+	if index < 0 || index >= len(musicReader.Playlist) {
+		return false
+	}
+	
+	musicReader.Playlist = append(musicReader.Playlist[:index], musicReader.Playlist[index+1:]...)
+	return true
+}
+
+// GetPlaylist returns a copy of the current playlist
+func (musicReader *IMusicReader) GetPlaylist() []string {
+	musicReader.Lock.RLock()
+	defer musicReader.Lock.RUnlock()
+	
+	playlist := make([]string, len(musicReader.Playlist))
+	copy(playlist, musicReader.Playlist)
+	return playlist
+}
+
+// ClearPlaylist clears all songs from the playlist
+func (musicReader *IMusicReader) ClearPlaylist() {
+	musicReader.Lock.Lock()
+	defer musicReader.Lock.Unlock()
+	musicReader.Playlist = []string{}
+}
+
+// ReorderPlaylist changes the order of songs in the playlist
+// moveFrom: current index
+// moveTo: target index
+func (musicReader *IMusicReader) ReorderPlaylist(moveFrom, moveTo int) bool {
+	musicReader.Lock.Lock()
+	defer musicReader.Lock.Unlock()
+	
+	if moveFrom < 0 || moveFrom >= len(musicReader.Playlist) || moveTo < 0 || moveTo >= len(musicReader.Playlist) {
+		return false
+	}
+	
+	// Remove the item from source
+	item := musicReader.Playlist[moveFrom]
+	musicReader.Playlist = append(musicReader.Playlist[:moveFrom], musicReader.Playlist[moveFrom+1:]...)
+	
+	// Insert at destination
+	newPlaylist := make([]string, 0, len(musicReader.Playlist)+1)
+	newPlaylist = append(newPlaylist, musicReader.Playlist[:moveTo]...)
+	newPlaylist = append(newPlaylist, item)
+	newPlaylist = append(newPlaylist, musicReader.Playlist[moveTo:]...)
+	
+	musicReader.Playlist = newPlaylist
+	return true
 }
 
 

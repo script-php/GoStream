@@ -285,3 +285,189 @@ func SetNextSong(ctx echo.Context) error {
 		},
 	})
 }
+
+// AddToPlaylist adds a song to the playlist by its hash
+func AddToPlaylist(ctx echo.Context) error {
+	hash := ctx.QueryParam("hash")
+	
+	if hash == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "hash parameter is required",
+		})
+	}
+	
+	// Verify the hash exists in our song collection
+	filePath, exists := modules.FindSongByHash(hash)
+	if !exists {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "song hash not found",
+		})
+	}
+	
+	modules.MusicReader.AddToPlaylist(hash)
+	
+	// Get song info
+	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
+	title := filepath.Base(filePath)
+	artist := "Unknown"
+	
+	if err == nil {
+		if t := tag.Title(); t != "" {
+			title = t
+		}
+		if a := tag.Artist(); a != "" {
+			artist = a
+		}
+		tag.Close()
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "song added to playlist",
+		"song": map[string]interface{}{
+			"hash":     hash,
+			"title":    title,
+			"artist":   artist,
+			"filename": filepath.Base(filePath),
+		},
+	})
+}
+
+// RemoveFromPlaylist removes a song from the playlist by position (0-indexed)
+func RemoveFromPlaylist(ctx echo.Context) error {
+	indexStr := ctx.QueryParam("index")
+	
+	if indexStr == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "index parameter is required",
+		})
+	}
+	
+	var index int
+	_, err := fmt.Sscanf(indexStr, "%d", &index)
+	if err != nil {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "index must be a valid integer",
+		})
+	}
+	
+	success := modules.MusicReader.RemoveFromPlaylist(index)
+	if !success {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "invalid index or playlist is empty",
+		})
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "song removed from playlist",
+	})
+}
+
+// GetPlaylist returns the current playlist
+func GetPlaylist(ctx echo.Context) error {
+	playlist := modules.MusicReader.GetPlaylist()
+	
+	type PlaylistItem struct {
+		Index    int    `json:"index"`
+		Hash     string `json:"hash"`
+		Title    string `json:"title"`
+		Artist   string `json:"artist"`
+		Filename string `json:"filename"`
+	}
+	
+	var items []PlaylistItem
+	
+	for i, hash := range playlist {
+		filePath, exists := modules.FindSongByHash(hash)
+		if !exists {
+			continue
+		}
+		
+		title := filepath.Base(filePath)
+		artist := "Unknown"
+		
+		tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
+		if err == nil {
+			if t := tag.Title(); t != "" {
+				title = t
+			}
+			if a := tag.Artist(); a != "" {
+				artist = a
+			}
+			tag.Close()
+		}
+		
+		items = append(items, PlaylistItem{
+			Index:    i,
+			Hash:     hash,
+			Title:    title,
+			Artist:   artist,
+			Filename: filepath.Base(filePath),
+		})
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"total":  len(items),
+		"playlist": items,
+	})
+}
+
+// ClearPlaylist clears all songs from the playlist
+func ClearPlaylist(ctx echo.Context) error {
+	modules.MusicReader.ClearPlaylist()
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "playlist cleared",
+	})
+}
+
+// ReorderPlaylist changes the order of songs in the playlist
+func ReorderPlaylist(ctx echo.Context) error {
+	moveFromStr := ctx.QueryParam("from")
+	moveToStr := ctx.QueryParam("to")
+	
+	if moveFromStr == "" || moveToStr == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "from and to parameters are required",
+		})
+	}
+	
+	var moveFrom, moveTo int
+	_, err := fmt.Sscanf(moveFromStr, "%d", &moveFrom)
+	if err != nil {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "from parameter must be a valid integer",
+		})
+	}
+	
+	_, err = fmt.Sscanf(moveToStr, "%d", &moveTo)
+	if err != nil {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "to parameter must be a valid integer",
+		})
+	}
+	
+	success := modules.MusicReader.ReorderPlaylist(moveFrom, moveTo)
+	if !success {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "invalid from/to indices",
+		})
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "playlist reordered",
+	})
+}

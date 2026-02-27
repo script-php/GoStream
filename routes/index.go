@@ -15,6 +15,14 @@ func InitRoutes(e *echo.Echo) {
 	e.POST("/next/set", SetNextSong)
 	e.GET("/songs", GetSongsList)
 	e.GET("/metrics", GetMetrics)
+	
+	// Playlist endpoints
+	e.POST("/playlist/add", AddToPlaylist)
+	e.DELETE("/playlist/remove", RemoveFromPlaylist)
+	e.GET("/playlist", GetPlaylist)
+	e.DELETE("/playlist", ClearPlaylist)
+	e.POST("/playlist/reorder", ReorderPlaylist)
+	
 	e.GET("/", GetFMStream)
 	e.GET("/stream.mp3", GetFMStream)
 	e.GET("/favicon.ico", func(c echo.Context) error {
