@@ -35,6 +35,9 @@ type IConfig struct {
 	Notice1            string // Shoutcast notice 1 (icy-notice1 header)
 	Notice2            string // Shoutcast notice 2 (icy-notice2 header)
 	MetaInterval       int    // Metadata interval in bytes (default 8192)
+	// Authentication
+	Username           string // Username for API authentication
+	Password           string // Password for API authentication
 }
 
 var Config *IConfig
@@ -58,6 +61,9 @@ type JSONConfig struct {
 	Notice1            string `json:"notice1"`
 	Notice2            string `json:"notice2"`
 	MetaInterval       int    `json:"meta_interval"`
+	// Authentication
+	Username           string `json:"username"`
+	Password           string `json:"password"`
 }
 
 // LoadConfigFromFile loads configuration from a local JSON file
@@ -135,6 +141,8 @@ func init() {
 	var notice1 string = ""
 	var notice2 string = ""
 	var metaInterval int = 8192
+	var username string = ""
+	var password string = ""
 
 	flag.StringVar(&name, "n", "GoStream", "server name")
 	flag.IntVar(&port, "p", 8090, "server port number")
@@ -206,6 +214,12 @@ func init() {
 		if jsonConfig.MetaInterval > 0 {
 			metaInterval = jsonConfig.MetaInterval
 		}
+		if jsonConfig.Username != "" {
+			username = jsonConfig.Username
+		}
+		if jsonConfig.Password != "" {
+			password = jsonConfig.Password
+		}
 		
 		// Boolean flags - only override if they're true in config
 		if jsonConfig.Random {
@@ -241,6 +255,8 @@ func init() {
 		Notice1:            notice1,
 		Notice2:            notice2,
 		MetaInterval:       metaInterval,
+		Username:           username,
+		Password:           password,
 	}
 }
 
