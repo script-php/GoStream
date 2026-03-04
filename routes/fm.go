@@ -136,10 +136,16 @@ func GetFMStream(ctx echo.Context) error {
 		modules.MusicReader.Lock.RUnlock()
 		
 		order = currentOrder
+		bufLen := len(targetBuffer)
+
+		// Skip empty buffers (shouldn't happen often since we don't clear anymore)
+		if bufLen == 0 {
+			time.Sleep(time.Millisecond * 50)
+			continue
+		}
 
 		// Process buffer with Icecast-style metadata injection
 		if wantMetadata {
-			bufLen := len(targetBuffer)
 			offset := 0
 
 			for offset < bufLen {

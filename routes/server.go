@@ -471,3 +471,61 @@ func ReorderPlaylist(ctx echo.Context) error {
 		"message": "playlist reordered",
 	})
 }
+// EnableIcecastMode manually switches to live Icecast streaming (optional - normally automatic)
+func EnableIcecastMode(ctx echo.Context) error {
+	if !modules.IcecastSource.HasActiveSource() {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status": "error",
+			"message": "No active Icecast source connected. Mode will switch automatically when source connects.",
+		})
+	}
+	
+	modules.MusicReader.Lock.RLock()
+	alreadyEnabled := modules.MusicReader.IsIcecastMode
+	modules.MusicReader.Lock.RUnlock()
+	
+	if !alreadyEnabled {
+		modules.MusicReader.EnableIcecastMode()
+		go modules.MusicReader.ProcessIcecastStream()
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "Icecast mode enabled - stream processing active",
+		"mode": "icecast",
+	})
+}
+
+// DisableIcecastMode manually switches back to file streaming (optional - normally automatic)
+func DisableIcecastMode(ctx echo.Context) error {
+	modules.MusicReader.DisableIcecastMode()
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "Icecast mode disabled - reverting to file streaming. Will auto-enable if source reconnects.",
+		"mode": "file",
+	})
+}
+
+// GetStreamMode returns current streaming mode (file or icecast)
+// Mode switches automatically based on whether Icecast source is connected
+func GetStreamMode(ctx echo.Context) error {
+	modules.MusicReader.Lock.RLock()
+	isIcecastMode := modules.MusicReader.IsIcecastMode
+	modules.MusicReader.Lock.RUnlock()
+	
+	mode := "file"
+	if isIcecastMode {
+		mode = "icecast"
+	}
+	
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"mode": mode,
+		"auto": "enabled - switches automatically when Icecast source connects/disconnects",
+		"icecast": map[string]interface{}{
+			"hasSource": modules.IcecastSource.HasActiveSource(),
+			"bufferSize": modules.IcecastSource.BufferSize(),
+		},
+	})
+}

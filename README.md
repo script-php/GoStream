@@ -11,6 +11,7 @@ GoStream is a lightweight MP3 streaming server written in Go. It provides real-t
 - **Audio normalization** - Automatic FFmpeg-based audio normalization to standardized bitrate and sample rate for consistent streaming
 - **Stream metadata** - ID3 tag parsing for track title and artist information
 - **Icecast compatibility** - Stats endpoint compatible with Icecast format for player integration
+- **Icecast source input** - Accept live audio from DJ apps and other sources via Icecast protocol
 - **Configurable gap/silence** - Set custom silence duration between songs (default 500ms)
 - **CORS support** - Cross-Origin Resource Sharing enabled for browser-based streaming
 - **Debug mode** - Enhanced logging for troubleshooting
@@ -61,6 +62,7 @@ The server will start on port 8090 by default.
 - `-debug` - Enable debug mode for detailed logging
 - `-n string` - Server name (default: "GoStream")
 - `-gap int` - Gap/silence between songs in milliseconds (default: 500)
+- `-icecast-source-port int` - Port for Icecast source client connections (default: 0 = disabled)
 - `-c string` - Load configuration from JSON file or URL
 - `-h` - Show help information
 
@@ -116,8 +118,71 @@ Create a `config.json` file:
 - `standard_sample_rate` (string) - Sample rate for normalized audio (e.g., "44100", "48000") - default: "44100"
 - `cache_dir` (string) - Directory to store cached normalized files - default: ".cache"
 - `cache_ttl_minutes` (int) - Cache time-to-live in minutes (files older than this are deleted, 0 = no cleanup) - default: 10
+- `icecast_source_port` (int) - Port for Icecast source client connections (0 = disabled) - default: 0
 
 **Note:** Audio normalization is always enabled for consistent stream quality. All songs are automatically normalized to the standard bitrate and sample rate. Command-line arguments take precedence over config file values.
+
+### Icecast Source Input (Live Audio)
+
+GoStream supports accepting live audio from DJ applications and other sources via the **Icecast protocol**. This allows you to stream live audio without pre-recorded files.
+
+#### Enabling Icecast Source Input
+
+Add to your config file:
+
+```json
+{
+  "port": 8090,
+  "icecast_source_port": 8001
+}
+```
+
+Or use command-line flag:
+
+```bash
+./gostream -icecast-source-port 8001
+```
+
+#### Connecting a Source
+
+Use any Icecast-compatible source client to push audio to your server:
+
+```bash
+# Example with curl and ffmpeg
+ffmpeg -i input.mp3 -f mp3 -b:a 128k - | \
+  curl -X SOURCE \
+  -H "Content-Type: audio/mpeg" \
+  --data-binary @- \
+  http://localhost:8001/
+```
+
+#### Features
+
+- Accept audio from DJ apps, ffmpeg, OBS Studio, and standard Icecast source clients
+- Automatic failover to file playlist when source disconnects
+- Broadcast live audio to all connected listeners
+- Full HTTP compatibility
+
+For detailed setup instructions and examples, see [ICECAST_SOURCE_GUIDE.md](release/ICECAST_SOURCE_GUIDE.md).
+
+#### Testing Icecast Connection
+
+Use the provided test scripts to verify your setup:
+
+**Linux/macOS:**
+```bash
+./release/test-icecast-source.sh localhost 8001 your_audio.mp3
+```
+
+**Windows (PowerShell):**
+```powershell
+.\release\test-icecast-source.ps1 localhost 8001 your_audio.mp3
+```
+
+**Windows (Batch):**
+```cmd
+release\test-icecast-source.bat localhost 8001 your_audio.mp3
+```
 
 ### Cache Management
 

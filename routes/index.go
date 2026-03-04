@@ -17,6 +17,7 @@ func InitRoutes(e *echo.Echo) {
 	e.GET("/next", GetNextSong)
 	e.GET("/songs", GetSongsList)
 	e.GET("/metrics", GetMetrics)
+	e.GET("/mode", GetStreamMode)
 	
 	// Protected endpoints - require authentication
 	e.GET("/skip", SkipSong, middlewares.BasicAuth)
@@ -28,6 +29,10 @@ func InitRoutes(e *echo.Echo) {
 	e.GET("/playlist", GetPlaylist, middlewares.BasicAuth)
 	e.DELETE("/playlist", ClearPlaylist, middlewares.BasicAuth)
 	e.POST("/playlist/reorder", ReorderPlaylist, middlewares.BasicAuth)
+	
+	// Icecast mode endpoints - protected (for manual override only - automatic switching is enabled)
+	e.POST("/icecast/enable", EnableIcecastMode, middlewares.BasicAuth)
+	e.POST("/icecast/disable", DisableIcecastMode, middlewares.BasicAuth)
 	
 	e.GET("/favicon.ico", func(c echo.Context) error {
         return c.NoContent(http.StatusNoContent)

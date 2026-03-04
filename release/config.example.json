@@ -16,5 +16,6 @@
   "notice2": "Enjoy the music!<BR>",
   "meta_interval": 8192,
   "username": "admin",
-  "password": "password"
+  "password": "password",
+  "icecast_source_port": 8001
 }
