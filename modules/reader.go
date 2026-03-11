@@ -522,6 +522,7 @@ func (musicReader *IMusicReader) SetUnitBuffer() {
 	var timeout = 0
 	maxRetries := 5
 	retry := 0
+	var lastError error
 
 	for {
 		unitBuffer = nil
@@ -548,20 +549,27 @@ func (musicReader *IMusicReader) SetUnitBuffer() {
 			musicReader.SelectNextMusic()
 			retry++
 			if retry > maxRetries {
-				Logger.Error("Failed to load next music after multiple retries")
-				return
+				lastError = fmt.Errorf("failed to load next music after %d retries", maxRetries)
+				Logger.Error(lastError)
+				break
 			}
 			// Continue loop to try reading from new file
 			continue
 		}
 
 		// Should not reach here, but break to avoid infinite loop
-		Logger.Error("Unable to read frames and no valid file")
-		return
+		lastError = fmt.Errorf("unable to read frames and no valid file")
+		Logger.Error(lastError)
+		break
 	}
 
 	store := musicReader.GetBufferStoreData()
+	if store == nil {
+		return
+	}
 
+	// Always update buffer to keep stream alive, even if no new frames
+	// This prevents client timeout when file loading fails
 	initialBuffer := store.InitialBuffer[:]
 	// Only shift if we have enough data to shift
 	if len(initialBuffer) > len(unitBuffer) {
@@ -571,10 +579,16 @@ func (musicReader *IMusicReader) SetUnitBuffer() {
 	}
 	initialBuffer = append(initialBuffer, unitBuffer...)
 
+	// Use existing timeout if no frames read (heartbeat)
+	actualTimeout := timeout
+	if actualTimeout == 0 {
+		actualTimeout = 50 // Heartbeat: keep connection alive
+	}
+
 	musicReader.SetBufferStoreData(IMusicReaderStoreData{
 		InitialBuffer: initialBuffer,
 		UnitBuffer:    unitBuffer,
-		Timeout:       timeout,
+		Timeout:       actualTimeout,
 		Order:         store.Order + 1,
 	})
 }

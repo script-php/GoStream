@@ -109,6 +109,8 @@ func GetFMStream(ctx echo.Context) error {
 	init := false
 	order := 0
 	sinceMetaBlock := 0 // Track bytes sent since last metadata (Icecast style)
+	lastBufferUpdateTime := time.Now() // Track when we last got new data
+	maxNoDataTimeout := 30 * time.Second // Force heartbeat if no data after 30s
 
 	for {
 		var targetBuffer []byte
@@ -120,6 +122,23 @@ func GetFMStream(ctx echo.Context) error {
 		
 		if store.Order == order {
 			modules.MusicReader.Lock.RUnlock()
+			
+			// Check if we haven't received data for too long
+			// Send heartbeat metadata to keep connection alive
+			if wantMetadata && time.Since(lastBufferUpdateTime) > maxNoDataTimeout {
+				musicInfo := modules.MusicReader.GetMusicInfo()
+				if musicInfo != nil && musicInfo.Filename != "" {
+					metadata := BuildIcecastMetadata(musicInfo.Filename, musicInfo.Url)
+					_, err := res.Write(metadata)
+					if err != nil {
+						modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
+						return nil
+					}
+					modules.AddBytesStreamed(int64(len(metadata)))
+					lastBufferUpdateTime = time.Now()
+				}
+			}
+			
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
@@ -137,6 +156,7 @@ func GetFMStream(ctx echo.Context) error {
 		
 		order = currentOrder
 		bufLen := len(targetBuffer)
+		lastBufferUpdateTime = time.Now() // Update timestamp since we got new buffer data
 
 		// Skip empty buffers (shouldn't happen often since we don't clear anymore)
 		if bufLen == 0 {
