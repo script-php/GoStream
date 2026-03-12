@@ -138,6 +138,7 @@ func PreTranscodeAudioAsync(filePath string) {
 }
 
 // CleanOldCacheFiles removes cache files older than the configured TTL
+// It preserves: the next song cache file (CachedNextHash) and all songs in the Playlist
 func CleanOldCacheFiles() error {
 	if Config.CacheTTLMinutes <= 0 {
 		// Cleanup disabled
@@ -149,9 +150,32 @@ func CleanOldCacheFiles() error {
 		return nil // Cache directory doesn't exist
 	}
 
+	// Build a set of protected cache file paths (files not to delete)
+	protectedFiles := make(map[string]bool)
+
+	// Protect the next song cache file
+	if MusicReader.CachedNextHash != "" {
+		if nextFilePath, exists := FindSongByHash(MusicReader.CachedNextHash); exists {
+			protectedPath := GetCachedPath(nextFilePath)
+			protectedFiles[protectedPath] = true
+			Logger.Debug(fmt.Sprintf("Protecting next song cache: %s", filepath.Base(protectedPath)))
+		}
+	}
+
+	// Protect all playlist song cache files
+	playlistSongs := MusicReader.GetPlaylist()
+	for _, hash := range playlistSongs {
+		if filePath, exists := FindSongByHash(hash); exists {
+			protectedPath := GetCachedPath(filePath)
+			protectedFiles[protectedPath] = true
+			Logger.Debug(fmt.Sprintf("Protecting playlist song cache: %s", filepath.Base(protectedPath)))
+		}
+	}
+
 	ttlDuration := time.Duration(Config.CacheTTLMinutes) * time.Minute
 	now := time.Now()
 	deletedCount := 0
+	skippedCount := 0
 	totalSize := int64(0)
 
 	err := filepath.Walk(cacheDir, func(path string, info os.FileInfo, err error) error {
@@ -161,6 +185,13 @@ func CleanOldCacheFiles() error {
 
 		// Skip directories
 		if info.IsDir() {
+			return nil
+		}
+
+		// Skip protected files (next song and playlist songs)
+		if protectedFiles[path] {
+			skippedCount++
+			Logger.Debug(fmt.Sprintf("Skipped protected cache file: %s", filepath.Base(path)))
 			return nil
 		}
 
@@ -179,9 +210,9 @@ func CleanOldCacheFiles() error {
 		return nil
 	})
 
-	if deletedCount > 0 {
+	if deletedCount > 0 || skippedCount > 0 {
 		freedMB := float64(totalSize) / (1024 * 1024)
-		Logger.Info(fmt.Sprintf("Cache cleanup: Deleted %d files, freed %.2f MB", deletedCount, freedMB))
+		Logger.Info(fmt.Sprintf("Cache cleanup: Deleted %d files, freed %.2f MB, protected %d files (next song + playlist)", deletedCount, freedMB, skippedCount))
 	}
 
 	return err
