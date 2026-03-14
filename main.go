@@ -25,6 +25,12 @@ func icecastNormalizerFeeder() {
 		// Transition: Source connected, start Icecast mode
 		if hasSource && !isIcecastProcessing {
 			modules.Logger.Info("Icecast source connected - switching to Icecast mode")
+			
+			// Close current file and advance to next song before switching modes
+			// This ensures: 1) current file is released (no lock for cleanup), 2) next song is ready when Icecast disconnects
+			modules.MusicReader.SkipToNext()
+			modules.Logger.Info("Advancing to next song in preparation for Icecast mode")
+			
 			modules.MusicReader.EnableIcecastMode()
 			
 			// Create a channel to signal when processor is done

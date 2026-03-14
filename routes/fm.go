@@ -126,9 +126,18 @@ func GetFMStream(ctx echo.Context) error {
 			// Check if we haven't received data for too long
 			// Send heartbeat metadata to keep connection alive
 			if wantMetadata && time.Since(lastBufferUpdateTime) > maxNoDataTimeout {
-				musicInfo := modules.MusicReader.GetMusicInfo()
-				if musicInfo != nil && musicInfo.Filename != "" {
-					metadata := BuildIcecastMetadata(musicInfo.Filename, musicInfo.Url)
+				var metadata []byte
+				if modules.MusicReader.IsIcecastMode {
+					// Live streaming mode - send generic live metadata
+					metadata = BuildIcecastMetadata("Live Stream", modules.Config.URL)
+				} else {
+					// File mode - send current song metadata
+					musicInfo := modules.MusicReader.GetMusicInfo()
+					if musicInfo != nil && musicInfo.Filename != "" {
+						metadata = BuildIcecastMetadata(musicInfo.Filename, musicInfo.Url)
+					}
+				}
+				if len(metadata) > 0 {
 					_, err := res.Write(metadata)
 					if err != nil {
 						modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
@@ -193,9 +202,18 @@ func GetFMStream(ctx echo.Context) error {
 
 				// If we hit metadata boundary, inject metadata
 				if sinceMetaBlock >= metaintInterval && offset < bufLen {
-					musicInfo := modules.MusicReader.GetMusicInfo()
-					if musicInfo != nil && musicInfo.Filename != "" {
-						metadata := BuildIcecastMetadata(musicInfo.Filename, musicInfo.Url)
+					var metadata []byte
+					if modules.MusicReader.IsIcecastMode {
+						// Live streaming mode - send generic live metadata
+						metadata = BuildIcecastMetadata("Live Stream", modules.Config.URL)
+					} else {
+						// File mode - send current song metadata
+						musicInfo := modules.MusicReader.GetMusicInfo()
+						if musicInfo != nil && musicInfo.Filename != "" {
+							metadata = BuildIcecastMetadata(musicInfo.Filename, musicInfo.Url)
+						}
+					}
+					if len(metadata) > 0 {
 						_, err := res.Write(metadata)
 						if err != nil {
 							modules.Logger.Info(fmt.Sprintf("[%s] Client %s disconnected", requestID, ip))
