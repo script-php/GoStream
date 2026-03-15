@@ -63,6 +63,21 @@ Example usage:
 
 ---
 
+## Icecast Source Input
+
+### icecast_source_port
+- **Type**: `int`
+- **Default**: `0` (disabled)
+- **Description**: Port for accepting Icecast source client connections. Set to 0 to disable. When enabled, allows DJ apps and other sources to push audio to GoStream
+- **Example**: `"icecast_source_port": 8001`
+- **Notes**: 
+  - Requires a separate port from the main streaming port
+  - Security: Use firewall rules to restrict access if on a public network
+  - Only one source can be active at a time
+  - For detailed setup instructions, see [ICECAST_SOURCE_GUIDE.md](ICECAST_SOURCE_GUIDE.md)
+
+---
+
 ## Audio Normalization
 
 ### standard_bitrate
