@@ -30,17 +30,19 @@ type IConfig struct {
 	CacheDir           string // Directory to store cached normalized files
 	CacheTTLMinutes    int    // Cache time-to-live in minutes (0 = no cleanup)
 	// Shoutcast metadata
-	Genre              string // Shoutcast genre (icy-genre header)
-	URL                string // Shoutcast/Stream URL (icy-url header)
-	Notice1            string // Shoutcast notice 1 (icy-notice1 header)
-	Notice2            string // Shoutcast notice 2 (icy-notice2 header)
-	MetaInterval       int    // Metadata interval in bytes (default 8192)
+	Genre        string // Shoutcast genre (icy-genre header)
+	URL          string // Shoutcast/Stream URL (icy-url header)
+	Notice1      string // Shoutcast notice 1 (icy-notice1 header)
+	Notice2      string // Shoutcast notice 2 (icy-notice2 header)
+	MetaInterval int    // Metadata interval in bytes (default 8192)
 	// Authentication
-	Username           string // Username for API authentication
-	Password           string // Password for API authentication
+	Username string // Username for API authentication
+	Password string // Password for API authentication
 }
 
 var Config *IConfig
+var RegisterService bool
+var RegisterConfigPath string
 
 // JSONConfig represents the structure of a config JSON file
 type JSONConfig struct {
@@ -56,14 +58,14 @@ type JSONConfig struct {
 	CacheDir           string `json:"cache_dir"`
 	CacheTTLMinutes    int    `json:"cache_ttl_minutes"`
 	// Shoutcast metadata
-	Genre              string `json:"genre"`
-	URL                string `json:"url"`
-	Notice1            string `json:"notice1"`
-	Notice2            string `json:"notice2"`
-	MetaInterval       int    `json:"meta_interval"`
+	Genre        string `json:"genre"`
+	URL          string `json:"url"`
+	Notice1      string `json:"notice1"`
+	Notice2      string `json:"notice2"`
+	MetaInterval int    `json:"meta_interval"`
 	// Authentication
-	Username           string `json:"username"`
-	Password           string `json:"password"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // LoadConfigFromFile loads configuration from a local JSON file
@@ -153,6 +155,8 @@ func init() {
 	flag.IntVar(&gap, "gap", 500, "gap/silence between songs in milliseconds")
 	flag.StringVar(&configSource, "c", "", "config file or URL (e.g., config.json or https://example.com/config.json)")
 	flag.BoolVar(&help, "h", false, "show help information")
+	var register bool
+	flag.BoolVar(&register, "register", false, "register as systemd service (requires sudo and -c flag)")
 
 	flag.Parse()
 
@@ -160,6 +164,16 @@ func init() {
 		fmt.Println("Usage: GoStream [options]")
 		flag.PrintDefaults()
 		os.Exit(0)
+	}
+
+	// Handle register flag
+	if register {
+		if configSource == "" {
+			log.Fatal("Error: -register flag requires -c (config file) to be specified\nUsage: sudo ./gostream -c config.json -register")
+		}
+		RegisterService = true
+		RegisterConfigPath = configSource
+		return
 	}
 
 	// Load config from JSON if provided
@@ -220,7 +234,7 @@ func init() {
 		if jsonConfig.Password != "" {
 			password = jsonConfig.Password
 		}
-		
+
 		// Boolean flags - only override if they're true in config
 		if jsonConfig.Random {
 			random = true

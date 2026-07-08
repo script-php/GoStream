@@ -64,6 +64,7 @@ The server will start on port 8090 by default.
 - `-gap int` - Gap/silence between songs in milliseconds (default: 500)
 - `-icecast-source-port int` - Port for Icecast source client connections (default: 0 = disabled)
 - `-c string` - Load configuration from JSON file or URL
+- `-register` - Register as systemd service (requires sudo and -c flag) - Linux only
 - `-h` - Show help information
 
 ### Configuration File
@@ -246,6 +247,105 @@ Cache cleanup: Deleted 3 files, freed 8.45 MB
 
 # All features enabled (command-line)
 ./gostream -d /music -p 8080 -r -n "My Station" -debug -gap 500
+```
+
+### Systemd Service Registration (Linux)
+
+GoStream can be registered as a systemd service to start automatically on boot and run continuously in the background.
+
+#### Prerequisites
+
+- Linux system with systemd
+- GoStream binary compiled and available
+- Root access (sudo) for installation
+
+#### Register as Systemd Service
+
+```bash
+sudo ./gostream -c config.json -register
+```
+
+This command will:
+- Validate the config file exists
+- Create `/etc/systemd/system/gostream.service` 
+- Enable the service on system boot
+- Start the service immediately
+- Display the service status and useful commands
+
+#### Service Management
+
+After registration, manage the service using standard systemd commands:
+
+```bash
+# Check service status
+sudo systemctl status gostream
+
+# Start/stop the service
+sudo systemctl start gostream
+sudo systemctl stop gostream
+
+# Restart the service
+sudo systemctl restart gostream
+
+# View real-time logs
+sudo journalctl -u gostream -f
+
+# View recent logs
+sudo journalctl -u gostream -n 50
+
+# Check if service is enabled on boot
+sudo systemctl is-enabled gostream
+
+# Disable/enable on boot
+sudo systemctl disable gostream
+sudo systemctl enable gostream
+```
+
+#### Requirements
+
+- The `-c` flag (config file) is mandatory when using `-register`
+- Must run with `sudo` privileges
+- The service will run as the user that executed the registration command
+
+#### Example Service File
+
+The registration creates a systemd service file at `/etc/systemd/system/gostream.service`:
+
+```ini
+[Unit]
+Description=GoStream Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/path/to/gostream
+ExecStart="/path/to/gostream" -c "/path/to/config.json"
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+
+LimitNOFILE=65535
+LimitNPROC=65535
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gostream
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### Uninstalling the Service
+
+To remove the systemd service:
+
+```bash
+sudo systemctl stop gostream
+sudo systemctl disable gostream
+sudo rm /etc/systemd/system/gostream.service
+sudo systemctl daemon-reload
 ```
 
 ## API Endpoints
