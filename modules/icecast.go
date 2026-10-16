@@ -2,6 +2,8 @@ package modules
 
 import (
 	"bufio"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"strings"
@@ -81,7 +83,10 @@ func (ab *AudioBuffer) ReadTimeout(timeout time.Duration) ([]byte, error) {
 	}
 
 	select {
-	case data := <-ab.ch:
+	case data, ok := <-ab.ch:
+		if !ok {
+			return nil, fmt.Errorf("buffer closed")
+		}
 		return data, nil
 	case <-time.After(timeout):
 		return nil, nil
@@ -115,9 +120,9 @@ type IcecastSourceServer struct {
 	sourceMetadata    map[string]string
 
 	// Listener tracking
-	listeners      map[string]chan []byte // Map of listener ID to channel
-	listenersMu    sync.RWMutex
-	listenerID     int64 // Counter for generating listener IDs
+	listeners   map[string]chan []byte // Map of listener ID to channel
+	listenersMu sync.RWMutex
+	listenerID  int64 // Counter for generating listener IDs
 
 	// Statistics
 	bytesReceived int64
@@ -265,15 +270,32 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 		return
 	}
 
-	// Only accept audio content types
-	if !strings.HasPrefix(contentType, "audio/") {
+	// Live input is passed through to listeners without transcoding, so only
+	// MP3 is safe to advertise as the station's audio/mpeg stream.
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if mediaType != "audio/mpeg" && mediaType != "audio/mp3" {
 		Logger.Info(fmt.Sprintf("Icecast source from %s unsupported content-type: %s", remoteAddr, contentType))
 		conn.Write([]byte("HTTP/1.0 415 Unsupported Media Type\r\nContent-Length: 21\r\n\r\nUnsupported Media Type"))
 		return
 	}
 
+	// Reuse the configured API credentials for source authentication. Leaving
+	// either value empty preserves the documented unauthenticated mode.
+	if Config.Username != "" && Config.Password != "" {
+		expected := "Basic " + base64.StdEncoding.EncodeToString([]byte(Config.Username+":"+Config.Password))
+		provided := headers["authorization"]
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			Logger.Info(fmt.Sprintf("Unauthorized Icecast source connection from %s", remoteAddr))
+			conn.Write([]byte("HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"GoStream Source\"\r\nContent-Length: 12\r\n\r\nUnauthorized"))
+			return
+		}
+	}
+
 	// Store metadata
 	s.mu.Lock()
+	if s.currentSourceConn != nil && s.currentSourceConn != conn {
+		s.currentSourceConn.Close()
+	}
 	s.sourceMetadata = headers
 	s.currentSourceConn = conn
 
@@ -281,7 +303,8 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 	if s.audioBuffer != nil {
 		s.audioBuffer.Close()
 	}
-	s.audioBuffer = NewAudioBuffer(512 * 1024)
+	sourceBuffer := NewAudioBuffer(512 * 1024)
+	s.audioBuffer = sourceBuffer
 
 	s.mu.Unlock()
 
@@ -305,7 +328,7 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 		}
 
 		// Write to buffer (non-blocking, drops oldest chunks if full)
-		_, err = s.audioBuffer.Write(buffer[:n])
+		_, err = sourceBuffer.Write(buffer[:n])
 		if err != nil {
 			Logger.Info(fmt.Sprintf("Icecast source %s: buffer write error: %v", remoteAddr, err))
 			return
@@ -361,7 +384,14 @@ func (s *IcecastSourceServer) BroadcastAudio(data []byte) {
 
 // GetAudioChunk retrieves the next audio chunk from the buffer
 func (s *IcecastSourceServer) GetAudioChunk() ([]byte, bool) {
-	chunk, err := s.audioBuffer.ReadTimeout(100 * time.Millisecond)
+	s.mu.RLock()
+	buffer := s.audioBuffer
+	s.mu.RUnlock()
+	if buffer == nil {
+		return nil, false
+	}
+
+	chunk, err := buffer.ReadTimeout(100 * time.Millisecond)
 	if err != nil || len(chunk) == 0 {
 		return nil, false
 	}

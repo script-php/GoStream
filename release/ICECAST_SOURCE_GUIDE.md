@@ -60,22 +60,23 @@ Source clients must send:
 1. **HTTP-like headers** with at least a `Content-Type` header specifying the audio format
 2. **Audio data** following the headers
 
-### Supported Formats
+### Supported Format
 
 The server accepts the following audio content types:
 
-| Format | Content-Type | Notes |
-|--------|-------------|-------|
-| MP3 | `audio/mpeg` | Most common, widely compatible |
-| AAC | `audio/aac` | Good compression, quality |
-| WAV | `audio/wav` | Uncompressed, large file sizes |
-| OGG Vorbis | `audio/ogg` | Open format alternative |
+Live audio is passed through without transcoding, so sources must send MP3 as
+`audio/mpeg` (or `audio/mp3`). Convert other input formats to MP3 in FFmpeg
+before sending them to GoStream.
+
+If `username` and `password` are configured, source clients must use HTTP Basic
+Authentication with those credentials.
 
 ### Example Source Connection (Using curl)
 
 ```bash
 # Stream MP3 file from local file
 curl -X SOURCE \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   -H "ice-name: My DJ Show" \
   -H "ice-genre: Electronic" \
@@ -85,6 +86,7 @@ curl -X SOURCE \
 # Or stream continuous audio (ffmpeg example)
 ffmpeg -i input.mp3 -f mp3 -c:a libmp3lame -ab 128k - | \
   curl -X SOURCE \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   -H "ice-name: Live DJ Stream" \
   --data-binary @- \
@@ -113,6 +115,7 @@ Stream from any source to GoStream:
 # From microphone
 ffmpeg -f dshow -i "your_microphone" -f mp3 - | \
   curl -X SOURCE \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   --data-binary @- \
   http://localhost:8001/
@@ -120,6 +123,7 @@ ffmpeg -f dshow -i "your_microphone" -f mp3 - | \
 # From USB audio device
 ffmpeg -f dshow -i "your_usb_device" -f mp3 -b:a 128k - | \
   curl -X SOURCE \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   --data-binary @- \
   http://localhost:8001/
@@ -128,6 +132,7 @@ ffmpeg -f dshow -i "your_usb_device" -f mp3 -b:a 128k - | \
 ffmpeg -i http://example.com/stream.mp3 \
   -f mp3 -b:a 128k - | \
   curl -X SOURCE \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   --data-binary @- \
   http://localhost:8001/
@@ -161,7 +166,7 @@ curl http://localhost:8090/stats
 
 ### Multiple Simultaneous Sources
 
-- **One active source at a time** - If a new source connects while one is active, the previous connection is replaced
+- **One active source at a time** - If a new authenticated source connects while one is active, the previous connection is closed and replaced
 - **No queue** - Only the most recent source is used
 
 ### Audio Buffering
@@ -226,7 +231,6 @@ Potential additions:
 - [ ] Multiple simultaneous sources with mixing
 - [ ] Real-time metadata updates (ICY metadata)
 - [ ] Automatic fallback to playlist when source drops
-- [ ] Source authentication
 - [ ] Audio normalization for live input
 - [ ] Buffer statistics and monitoring
 

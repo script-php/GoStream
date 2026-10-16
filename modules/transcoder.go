@@ -6,15 +6,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 )
 
 // Standard format for normalized audio
 // These defaults are used if not specified in config
 var (
-	DefaultBitrate   = "128k"   // Standard bitrate for transcoding
-	DefaultSampleRate = "44100" // Standard sample rate for transcoding
-	DefaultCacheDir  = ".cache" // Directory to store cached normalized files
+	DefaultBitrate    = "128k"   // Standard bitrate for transcoding
+	DefaultSampleRate = "44100"  // Standard sample rate for transcoding
+	DefaultCacheDir   = ".cache" // Directory to store cached normalized files
+	transcodeLocks    sync.Map
 )
 
 // GetFFmpegPath returns the path to ffmpeg binary
@@ -42,7 +44,8 @@ func GetFFmpegPath() (string, error) {
 // GetCachedPath returns the path where a normalized file should be cached
 func GetCachedPath(originalPath string) string {
 	filename := filepath.Base(originalPath)
-	return filepath.Join(Config.CacheDir, filename)
+	hash := GenerateSongHash(originalPath)
+	return filepath.Join(Config.CacheDir, hash[:12]+"_"+filename)
 }
 
 // IsCached checks if a normalized version exists in cache
@@ -56,8 +59,14 @@ func IsCached(originalPath string) bool {
 // Returns the path to the normalized file (either cached or original)
 // Note: Normalization is always enabled for consistent stream quality
 func TranscodeAudio(filePath string) (string, error) {
-	// Check if already cached
 	cachedPath := GetCachedPath(filePath)
+	lockValue, _ := transcodeLocks.LoadOrStore(cachedPath, &sync.Mutex{})
+	pathLock := lockValue.(*sync.Mutex)
+	pathLock.Lock()
+	defer pathLock.Unlock()
+
+	// Check again after acquiring the per-output lock. The next-track
+	// pre-transcoder may have completed while this call was waiting.
 	if IsCached(filePath) {
 		Logger.Info(fmt.Sprintf("Using cached version: %s", cachedPath))
 		return cachedPath, nil
@@ -76,6 +85,20 @@ func TranscodeAudio(filePath string) (string, error) {
 		return filePath, nil // Fallback to original
 	}
 
+	// FFmpeg writes to a temporary file, then the completed result is moved
+	// into place atomically. Readers can never open a half-written cache file.
+	tempFile, err := os.CreateTemp(Config.CacheDir, "gostream-*.mp3")
+	if err != nil {
+		Logger.Error(fmt.Sprintf("Failed to create temporary cache file: %v", err))
+		return filePath, nil
+	}
+	tempPath := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempPath)
+		return filePath, nil
+	}
+	defer os.Remove(tempPath)
+
 	// Run ffmpeg transcoding
 	Logger.Info(fmt.Sprintf("Transcoding: %s", filepath.Base(filePath)))
 	cmd := exec.Command(ffmpegPath,
@@ -83,7 +106,7 @@ func TranscodeAudio(filePath string) (string, error) {
 		"-b:a", Config.StandardBitrate,
 		"-ar", Config.StandardSampleRate,
 		"-y", // Overwrite if exists
-		cachedPath,
+		tempPath,
 	)
 
 	// Suppress output
@@ -93,6 +116,10 @@ func TranscodeAudio(filePath string) (string, error) {
 	if err := cmd.Run(); err != nil {
 		Logger.Error(fmt.Sprintf("Transcoding failed: %v", err))
 		return filePath, nil // Fallback to original
+	}
+	if err := os.Rename(tempPath, cachedPath); err != nil {
+		Logger.Error(fmt.Sprintf("Failed to publish transcoded cache file: %v", err))
+		return filePath, nil
 	}
 
 	Logger.Info(fmt.Sprintf("Transcoded successfully: %s", filepath.Base(cachedPath)))
@@ -126,14 +153,14 @@ func PreTranscodeAudioAsync(filePath string) {
 	if IsCached(filePath) {
 		return
 	}
-	
+
 	// Transcode in background
 	_, err := TranscodeAudio(filePath)
 	if err != nil {
 		// Silently fail - not critical if pre-transcoding fails
 		return
 	}
-	
+
 	Logger.Info(fmt.Sprintf("Pre-transcoded (cache): %s", filepath.Base(filePath)))
 }
 

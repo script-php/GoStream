@@ -152,6 +152,7 @@ Use any Icecast-compatible source client to push audio to your server:
 # Example with curl and ffmpeg
 ffmpeg -i input.mp3 -f mp3 -b:a 128k - | \
   curl -X SOURCE \
+	-u admin:password \
   -H "Content-Type: audio/mpeg" \
   --data-binary @- \
   http://localhost:8001/

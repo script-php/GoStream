@@ -35,7 +35,7 @@ func GetServerInfo(ctx echo.Context) error {
 // GetStats returns current stream stats in Icecast-compatible format
 func GetStats(ctx echo.Context) error {
 	musicInfo := modules.MusicReader.GetMusicInfo()
-	
+
 	stats := map[string]interface{}{
 		"icestats": map[string]interface{}{
 			"source": map[string]interface{}{
@@ -49,7 +49,7 @@ func GetStats(ctx echo.Context) error {
 			},
 		},
 	}
-	
+
 	return ctx.JSON(http.StatusOK, stats)
 }
 
@@ -57,13 +57,13 @@ func GetStats(ctx echo.Context) error {
 func SkipSong(ctx echo.Context) error {
 	modules.MusicReader.SkipToNext()
 	musicInfo := modules.MusicReader.GetMusicInfo()
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"status": "skipped",
 		"now_playing": map[string]interface{}{
-			"title":    musicInfo.Filename,
-			"artist":   musicInfo.Artist,
-			"bitrate":  musicInfo.BitRate,
+			"title":      musicInfo.Filename,
+			"artist":     musicInfo.Artist,
+			"bitrate":    musicInfo.BitRate,
 			"samplerate": musicInfo.SampleRate,
 		},
 	})
@@ -72,7 +72,7 @@ func SkipSong(ctx echo.Context) error {
 // GetStreamStatus returns the current stream status
 func GetStreamStatus(ctx echo.Context) error {
 	musicInfo := modules.MusicReader.GetMusicInfo()
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"status": "playing",
 		"now_playing": map[string]interface{}{
@@ -87,14 +87,14 @@ func GetStreamStatus(ctx echo.Context) error {
 // GetNextSong returns info about the next song
 func GetNextSong(ctx echo.Context) error {
 	nextInfo := modules.MusicReader.GetNextMusicInfo()
-	
+
 	if nextInfo == nil {
 		return ctx.JSON(http.StatusOK, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "Could not determine next song",
 		})
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"next_song": map[string]interface{}{
@@ -109,7 +109,7 @@ func GetNextSong(ctx echo.Context) error {
 // GetMetrics returns system and stream metrics
 func GetMetrics(ctx echo.Context) error {
 	metricsData := modules.GetMetrics()
-	
+
 	// Format bytes to human-readable format
 	formatBytes := func(bytes int64) string {
 		const (
@@ -117,7 +117,7 @@ func GetMetrics(ctx echo.Context) error {
 			MB = KB * 1024
 			GB = MB * 1024
 		)
-		
+
 		switch {
 		case bytes >= GB:
 			return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
@@ -129,25 +129,25 @@ func GetMetrics(ctx echo.Context) error {
 			return fmt.Sprintf("%d B", bytes)
 		}
 	}
-	
+
 	// Format uptime
 	uptimeSeconds := (time.Now().UnixMilli() - metricsData.StreamStartTime) / 1000
 	hours := uptimeSeconds / 3600
 	minutes := (uptimeSeconds % 3600) / 60
 	seconds := uptimeSeconds % 60
 	uptimeFormatted := fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"metrics": map[string]interface{}{
 			"active_listeners": metricsData.ActiveListeners,
 			"total_data_streamed": map[string]interface{}{
-				"bytes":      metricsData.TotalBytesStreamed,
-				"human":      formatBytes(metricsData.TotalBytesStreamed),
+				"bytes": metricsData.TotalBytesStreamed,
+				"human": formatBytes(metricsData.TotalBytesStreamed),
 			},
 			"stream_uptime": map[string]interface{}{
-				"seconds":    uptimeSeconds,
-				"formatted":  uptimeFormatted,
+				"seconds":   uptimeSeconds,
+				"formatted": uptimeFormatted,
 			},
 			"memory": map[string]interface{}{
 				"current_usage_mb": metricsData.MemoryUsage,
@@ -178,7 +178,7 @@ func GetSongsList(ctx echo.Context) error {
 	if err != nil {
 		modules.Logger.Error(err)
 		return ctx.JSON(http.StatusOK, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "Could not retrieve songs list",
 		})
 	}
@@ -236,34 +236,34 @@ func GetSongsList(ctx echo.Context) error {
 // SetNextSong sets the next song to be played by its hash
 func SetNextSong(ctx echo.Context) error {
 	hash := ctx.QueryParam("hash")
-	
+
 	if hash == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "hash parameter is required",
 		})
 	}
-	
+
 	// Verify the hash exists in our song collection
 	filePath, exists := modules.FindSongByHash(hash)
 	if !exists {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "song hash not found",
 		})
 	}
-	
+
 	// Set the cached next hash
-	modules.MusicReader.CachedNextHash = hash
-	
+	modules.MusicReader.SetCachedNextHash(hash)
+
 	// Pre-transcode the song in background so it's ready when it plays
 	go modules.PreTranscodeAudioAsync(filePath)
-	
+
 	// Get info about the song we just set
 	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	title := filepath.Base(filePath)
 	artist := "Unknown"
-	
+
 	if err == nil {
 		if t := tag.Title(); t != "" {
 			title = t
@@ -273,9 +273,9 @@ func SetNextSong(ctx echo.Context) error {
 		}
 		tag.Close()
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "next song set",
 		"next_song": map[string]interface{}{
 			"hash":     hash,
@@ -289,30 +289,30 @@ func SetNextSong(ctx echo.Context) error {
 // AddToPlaylist adds a song to the playlist by its hash
 func AddToPlaylist(ctx echo.Context) error {
 	hash := ctx.QueryParam("hash")
-	
+
 	if hash == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "hash parameter is required",
 		})
 	}
-	
+
 	// Verify the hash exists in our song collection
 	filePath, exists := modules.FindSongByHash(hash)
 	if !exists {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "song hash not found",
 		})
 	}
-	
+
 	modules.MusicReader.AddToPlaylist(hash)
-	
+
 	// Get song info
 	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	title := filepath.Base(filePath)
 	artist := "Unknown"
-	
+
 	if err == nil {
 		if t := tag.Title(); t != "" {
 			title = t
@@ -322,9 +322,9 @@ func AddToPlaylist(ctx echo.Context) error {
 		}
 		tag.Close()
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "song added to playlist",
 		"song": map[string]interface{}{
 			"hash":     hash,
@@ -338,33 +338,33 @@ func AddToPlaylist(ctx echo.Context) error {
 // RemoveFromPlaylist removes a song from the playlist by position (0-indexed)
 func RemoveFromPlaylist(ctx echo.Context) error {
 	indexStr := ctx.QueryParam("index")
-	
+
 	if indexStr == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "index parameter is required",
 		})
 	}
-	
+
 	var index int
 	_, err := fmt.Sscanf(indexStr, "%d", &index)
 	if err != nil {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "index must be a valid integer",
 		})
 	}
-	
+
 	success := modules.MusicReader.RemoveFromPlaylist(index)
 	if !success {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "invalid index or playlist is empty",
 		})
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "song removed from playlist",
 	})
 }
@@ -372,7 +372,7 @@ func RemoveFromPlaylist(ctx echo.Context) error {
 // GetPlaylist returns the current playlist
 func GetPlaylist(ctx echo.Context) error {
 	playlist := modules.MusicReader.GetPlaylist()
-	
+
 	type PlaylistItem struct {
 		Index    int    `json:"index"`
 		Hash     string `json:"hash"`
@@ -380,18 +380,18 @@ func GetPlaylist(ctx echo.Context) error {
 		Artist   string `json:"artist"`
 		Filename string `json:"filename"`
 	}
-	
+
 	var items []PlaylistItem
-	
+
 	for i, hash := range playlist {
 		filePath, exists := modules.FindSongByHash(hash)
 		if !exists {
 			continue
 		}
-		
+
 		title := filepath.Base(filePath)
 		artist := "Unknown"
-		
+
 		tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 		if err == nil {
 			if t := tag.Title(); t != "" {
@@ -402,7 +402,7 @@ func GetPlaylist(ctx echo.Context) error {
 			}
 			tag.Close()
 		}
-		
+
 		items = append(items, PlaylistItem{
 			Index:    i,
 			Hash:     hash,
@@ -411,10 +411,10 @@ func GetPlaylist(ctx echo.Context) error {
 			Filename: filepath.Base(filePath),
 		})
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
-		"total":  len(items),
+		"status":   "success",
+		"total":    len(items),
 		"playlist": items,
 	})
 }
@@ -422,9 +422,9 @@ func GetPlaylist(ctx echo.Context) error {
 // ClearPlaylist clears all songs from the playlist
 func ClearPlaylist(ctx echo.Context) error {
 	modules.MusicReader.ClearPlaylist()
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "playlist cleared",
 	})
 }
@@ -433,77 +433,85 @@ func ClearPlaylist(ctx echo.Context) error {
 func ReorderPlaylist(ctx echo.Context) error {
 	moveFromStr := ctx.QueryParam("from")
 	moveToStr := ctx.QueryParam("to")
-	
+
 	if moveFromStr == "" || moveToStr == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "from and to parameters are required",
 		})
 	}
-	
+
 	var moveFrom, moveTo int
 	_, err := fmt.Sscanf(moveFromStr, "%d", &moveFrom)
 	if err != nil {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "from parameter must be a valid integer",
 		})
 	}
-	
+
 	_, err = fmt.Sscanf(moveToStr, "%d", &moveTo)
 	if err != nil {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "to parameter must be a valid integer",
 		})
 	}
-	
+
 	success := modules.MusicReader.ReorderPlaylist(moveFrom, moveTo)
 	if !success {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "invalid from/to indices",
 		})
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "playlist reordered",
 	})
 }
+
 // EnableIcecastMode manually switches to live Icecast streaming (optional - normally automatic)
 func EnableIcecastMode(ctx echo.Context) error {
+	if modules.IcecastSource == nil {
+		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+			"status":  "error",
+			"message": "Icecast source input is disabled. Configure icecast_source_port to enable it.",
+		})
+	}
+
 	if !modules.IcecastSource.HasActiveSource() {
 		return ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-			"status": "error",
+			"status":  "error",
 			"message": "No active Icecast source connected. Mode will switch automatically when source connects.",
 		})
 	}
-	
+
 	modules.MusicReader.Lock.RLock()
 	alreadyEnabled := modules.MusicReader.IsIcecastMode
 	modules.MusicReader.Lock.RUnlock()
-	
+
 	if !alreadyEnabled {
 		modules.MusicReader.EnableIcecastMode()
 		go modules.MusicReader.ProcessIcecastStream()
 	}
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "Icecast mode enabled - stream processing active",
-		"mode": "icecast",
+		"mode":    "icecast",
 	})
 }
 
 // DisableIcecastMode manually switches back to file streaming (optional - normally automatic)
 func DisableIcecastMode(ctx echo.Context) error {
 	modules.MusicReader.DisableIcecastMode()
-	
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "Icecast mode disabled - reverting to file streaming. Will auto-enable if source reconnects.",
-		"mode": "file",
+		"mode":    "file",
 	})
 }
 
@@ -513,19 +521,26 @@ func GetStreamMode(ctx echo.Context) error {
 	modules.MusicReader.Lock.RLock()
 	isIcecastMode := modules.MusicReader.IsIcecastMode
 	modules.MusicReader.Lock.RUnlock()
-	
+
 	mode := "file"
 	if isIcecastMode {
 		mode = "icecast"
 	}
-	
+
+	icecastStatus := map[string]interface{}{
+		"enabled":    modules.Config.IcecastSourcePort > 0,
+		"hasSource":  false,
+		"bufferSize": 0,
+	}
+	if modules.IcecastSource != nil {
+		icecastStatus["hasSource"] = modules.IcecastSource.HasActiveSource()
+		icecastStatus["bufferSize"] = modules.IcecastSource.BufferSize()
+	}
+
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"status": "success",
-		"mode": mode,
-		"auto": "enabled - switches automatically when Icecast source connects/disconnects",
-		"icecast": map[string]interface{}{
-			"hasSource": modules.IcecastSource.HasActiveSource(),
-			"bufferSize": modules.IcecastSource.BufferSize(),
-		},
+		"status":  "success",
+		"mode":    mode,
+		"auto":    "enabled - switches automatically when Icecast source connects/disconnects",
+		"icecast": icecastStatus,
 	})
 }

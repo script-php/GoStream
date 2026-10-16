@@ -97,17 +97,20 @@ func main() {
 
 	modules.InitReader()
 
-	// Initialize Icecast source server on port 8001
-	modules.InitIcecastServer("8001")
-	go func() {
-		err := modules.IcecastSource.Start()
-		if err != nil {
-			modules.Logger.Error(fmt.Sprintf("Icecast server failed: %v", err))
-		}
-	}()
+	if modules.Config.IcecastSourcePort > 0 {
+		modules.InitIcecastServer(fmt.Sprintf("%d", modules.Config.IcecastSourcePort))
+		go func() {
+			err := modules.IcecastSource.Start()
+			if err != nil {
+				modules.Logger.Error(fmt.Sprintf("Icecast server failed: %v", err))
+			}
+		}()
 
-	// Start Icecast normalizer feeder (runs continuously, checks mode)
-	go icecastNormalizerFeeder()
+		// The feeder runs only when live-source input is enabled.
+		go icecastNormalizerFeeder()
+	} else {
+		modules.Logger.Info("Icecast source input disabled")
+	}
 
 	e := echo.New()
 

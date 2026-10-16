@@ -29,6 +29,7 @@ type IConfig struct {
 	StandardSampleRate string // Sample rate for audio normalization (e.g., "44100")
 	CacheDir           string // Directory to store cached normalized files
 	CacheTTLMinutes    int    // Cache time-to-live in minutes (0 = no cleanup)
+	IcecastSourcePort  int    // Port for Icecast source connections (0 = disabled)
 	// Shoutcast metadata
 	Genre        string // Shoutcast genre (icy-genre header)
 	URL          string // Shoutcast/Stream URL (icy-url header)
@@ -49,14 +50,15 @@ type JSONConfig struct {
 	Port               int    `json:"port"`
 	Host               string `json:"host"`
 	Directory          string `json:"directory"`
-	Random             bool   `json:"random"`
-	Debug              bool   `json:"debug"`
+	Random             *bool  `json:"random"`
+	Debug              *bool  `json:"debug"`
 	Name               string `json:"name"`
-	GapMs              int    `json:"gap_ms"`
+	GapMs              *int   `json:"gap_ms"`
 	StandardBitrate    string `json:"standard_bitrate"`
 	StandardSampleRate string `json:"standard_sample_rate"`
 	CacheDir           string `json:"cache_dir"`
-	CacheTTLMinutes    int    `json:"cache_ttl_minutes"`
+	CacheTTLMinutes    *int   `json:"cache_ttl_minutes"`
+	IcecastSourcePort  *int   `json:"icecast_source_port"`
 	// Shoutcast metadata
 	Genre        string `json:"genre"`
 	URL          string `json:"url"`
@@ -145,6 +147,7 @@ func init() {
 	var metaInterval int = 8192
 	var username string = ""
 	var password string = ""
+	var icecastSourcePort int = 0
 
 	flag.StringVar(&name, "n", "GoStream", "server name")
 	flag.IntVar(&port, "p", 8090, "server port number")
@@ -153,12 +156,39 @@ func init() {
 	flag.BoolVar(&debug, "debug", false, "enable debug mode for server")
 	flag.StringVar(&directory, "d", root, "directory to play")
 	flag.IntVar(&gap, "gap", 500, "gap/silence between songs in milliseconds")
+	flag.IntVar(&icecastSourcePort, "icecast-source-port", 0, "port for Icecast source connections (0 = disabled)")
 	flag.StringVar(&configSource, "c", "", "config file or URL (e.g., config.json or https://example.com/config.json)")
 	flag.BoolVar(&help, "h", false, "show help information")
 	var register bool
 	flag.BoolVar(&register, "register", false, "register as systemd service (requires sudo and -c flag)")
 
+	// Package initialization happens before Go's testing package registers all
+	// -test.* flags. Do not parse the application CLI when running a test binary.
+	if strings.HasSuffix(os.Args[0], ".test") {
+		Config = &IConfig{
+			Port:               port,
+			Host:               host,
+			Random:             random,
+			Directory:          root,
+			Debug:              debug,
+			Time:               time.Now().UnixMilli(),
+			Name:               name,
+			Version:            conf.CodeVersion,
+			GapMs:              gap,
+			CacheTTLMinutes:    cacheTTLMinutes,
+			StandardBitrate:    standardBitrate,
+			StandardSampleRate: standardSampleRate,
+			CacheDir:           cacheDir,
+			MetaInterval:       metaInterval,
+		}
+		return
+	}
+
 	flag.Parse()
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
 
 	if help {
 		fmt.Println("Usage: GoStream [options]")
@@ -185,20 +215,20 @@ func init() {
 
 		// Apply JSON config values (only if not already set by defaults)
 		// Check if flags were explicitly provided by comparing with defaults
-		if jsonConfig.Port != 0 && port == 8090 {
+		if jsonConfig.Port != 0 && !explicitFlags["p"] {
 			port = jsonConfig.Port
 		}
-		if jsonConfig.Host != "" && host == "0.0.0.0" {
+		if jsonConfig.Host != "" && !explicitFlags["host"] {
 			host = jsonConfig.Host
 		}
-		if jsonConfig.Directory != "" {
+		if jsonConfig.Directory != "" && !explicitFlags["d"] {
 			directory = jsonConfig.Directory
 		}
-		if jsonConfig.Name != "" && name == "GoStream" {
+		if jsonConfig.Name != "" && !explicitFlags["n"] {
 			name = jsonConfig.Name
 		}
-		if jsonConfig.GapMs != 0 && gap == 500 {
-			gap = jsonConfig.GapMs
+		if jsonConfig.GapMs != nil && !explicitFlags["gap"] {
+			gap = *jsonConfig.GapMs
 		}
 		if jsonConfig.StandardBitrate != "" {
 			standardBitrate = jsonConfig.StandardBitrate
@@ -209,8 +239,11 @@ func init() {
 		if jsonConfig.CacheDir != "" {
 			cacheDir = jsonConfig.CacheDir
 		}
-		if jsonConfig.CacheTTLMinutes != 0 {
-			cacheTTLMinutes = jsonConfig.CacheTTLMinutes
+		if jsonConfig.CacheTTLMinutes != nil {
+			cacheTTLMinutes = *jsonConfig.CacheTTLMinutes
+		}
+		if jsonConfig.IcecastSourcePort != nil && !explicitFlags["icecast-source-port"] {
+			icecastSourcePort = *jsonConfig.IcecastSourcePort
 		}
 		// Shoutcast metadata
 		if jsonConfig.Genre != "" {
@@ -235,12 +268,11 @@ func init() {
 			password = jsonConfig.Password
 		}
 
-		// Boolean flags - only override if they're true in config
-		if jsonConfig.Random {
-			random = true
+		if jsonConfig.Random != nil && !explicitFlags["r"] {
+			random = *jsonConfig.Random
 		}
-		if jsonConfig.Debug {
-			debug = true
+		if jsonConfig.Debug != nil && !explicitFlags["debug"] {
+			debug = *jsonConfig.Debug
 		}
 	}
 
@@ -264,6 +296,7 @@ func init() {
 		StandardBitrate:    standardBitrate,
 		StandardSampleRate: standardSampleRate,
 		CacheDir:           cacheDir,
+		IcecastSourcePort:  icecastSourcePort,
 		Genre:              genre,
 		URL:                url,
 		Notice1:            notice1,

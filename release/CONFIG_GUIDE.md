@@ -178,7 +178,7 @@ Example usage:
 
 Once configured and running, GoStream provides several endpoints:
 
-- `/fm` - Stream endpoint (audio/mpeg)
+- `/` or `/stream.mp3` - Stream endpoint (audio/mpeg)
 - `/server-info` - Server information and current song
 - `/stats` - Stream statistics (Icecast compatible format)
 - `/status` - Current stream status
