@@ -22,6 +22,7 @@ var SongHashMap = &sync.Map{}
 
 // Global list of sorted song hashes
 var SortedSongHashes []string
+var SongListLock sync.RWMutex
 
 type IMusicReader struct {
 	InitialFrame int
@@ -107,9 +108,10 @@ func (musicReader *IMusicReader) GetNextMusicHash(songHashes []string) string {
 		return ""
 	}
 
+	currentHash := musicReader.GetCurrentSongHash()
 	currentIndex := -1
 	for i, hash := range songHashes {
-		if hash == musicReader.CurrentSongHash {
+		if hash == currentHash {
 			currentIndex = i
 			break
 		}
@@ -127,36 +129,45 @@ func (musicReader *IMusicReader) GetNextMusicHash(songHashes []string) string {
 	}
 }
 
-func (musicReader *IMusicReader) SelectNextMusic() {
+// chooseNextMusic updates playlist state and returns the selected source path
+// plus the following path. It deliberately performs no transcoding or file IO.
+func (musicReader *IMusicReader) chooseNextMusic() (string, string, error) {
 	_, err := GetMp3FilePaths()
 	if err != nil {
-		Logger.Error(err)
-		return
+		return "", "", err
+	}
+
+	SongListLock.RLock()
+	songHashes := append([]string(nil), SortedSongHashes...)
+	SongListLock.RUnlock()
+	if len(songHashes) == 0 {
+		return "", "", fmt.Errorf("no MP3 files available")
 	}
 
 	// Use cached next hash as current song if available, otherwise calculate it
 	cachedNextHash := musicReader.GetCachedNextHash()
 	if cachedNextHash != "" {
-		MusicReader.CurrentSongHash = cachedNextHash
+		musicReader.SetCurrentSongHash(cachedNextHash)
 	} else {
 		// Calculate next song based on random or sequential mode
 		if Config.Random {
-			randomIndex := rand.Intn(len(SortedSongHashes))
-			MusicReader.CurrentSongHash = SortedSongHashes[randomIndex]
+			randomIndex := rand.Intn(len(songHashes))
+			musicReader.SetCurrentSongHash(songHashes[randomIndex])
 		} else {
 			// Find current index and move to next
 			currentIndex := -1
-			for i, hash := range SortedSongHashes {
-				if hash == musicReader.CurrentSongHash {
+			currentHash := musicReader.GetCurrentSongHash()
+			for i, hash := range songHashes {
+				if hash == currentHash {
 					currentIndex = i
 					break
 				}
 			}
 			nextIndex := currentIndex + 1
-			if currentIndex == -1 || nextIndex >= len(SortedSongHashes) {
+			if currentIndex == -1 || nextIndex >= len(songHashes) {
 				nextIndex = 0
 			}
-			MusicReader.CurrentSongHash = SortedSongHashes[nextIndex]
+			musicReader.SetCurrentSongHash(songHashes[nextIndex])
 		}
 	}
 
@@ -171,14 +182,35 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 	musicReader.Lock.Unlock()
 	if nextHash == "" {
 		// Priority 2: Calculate next song based on random or sequential mode
-		nextHash = musicReader.GetNextMusicHash(SortedSongHashes)
+		nextHash = musicReader.GetNextMusicHash(songHashes)
 	}
 	musicReader.SetCachedNextHash(nextHash)
 
-	filePath, exists := FindSongByHash(musicReader.CurrentSongHash)
+	currentHash := musicReader.GetCurrentSongHash()
+	filePath, exists := FindSongByHash(currentHash)
 	if !exists {
-		Logger.Error(fmt.Sprintf("Could not find file for hash %s", musicReader.CurrentSongHash))
-		musicReader.SelectNextMusic()
+		return "", "", fmt.Errorf("could not find file for hash %s", currentHash)
+	}
+
+	nextFilePath, _ := FindSongByHash(nextHash)
+	return filePath, nextFilePath, nil
+}
+
+// PrepareNextMusic selects the next track for the continuous PCM pipeline.
+func (musicReader *IMusicReader) PrepareNextMusic() (string, error) {
+	filePath, _, err := musicReader.chooseNextMusic()
+	if err != nil {
+		return "", err
+	}
+	musicReader.SetMusicInfoFromPath(filePath)
+	return filePath, nil
+}
+
+// SelectNextMusic retains the legacy MP3-frame reader behavior.
+func (musicReader *IMusicReader) SelectNextMusic() {
+	filePath, nextFilePath, err := musicReader.chooseNextMusic()
+	if err != nil {
+		Logger.Error(err)
 		return
 	}
 
@@ -189,20 +221,56 @@ func (musicReader *IMusicReader) SelectNextMusic() {
 	}
 
 	// Always pre-transcode the next song (whether it's from playlist or random/sequential)
-	nextFilePath, nextExists := FindSongByHash(nextHash)
-	if nextExists {
+	if nextFilePath != "" {
 		go PreTranscodeAudioAsync(nextFilePath)
 	}
 
 	file, err := os.Open(filePath)
 	if err != nil {
 		Logger.Error(err)
-		musicReader.SelectNextMusic()
 		return
 	}
 	MusicReader.File = file
 
 	MusicReader.ResetMusicInfo(filePath)
+}
+
+// SetMusicInfoFromPath reads metadata without changing the active stream file.
+func (musicReader *IMusicReader) SetMusicInfoFromPath(filePath string) {
+	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
+	if err != nil {
+		Logger.Error(err)
+		return
+	}
+	defer tag.Close()
+
+	title := tag.Title()
+	if title == "" {
+		title = filepath.Base(filePath)
+	}
+	artist := tag.Artist()
+	if artist == "" {
+		artist = "Unknown"
+	}
+
+	filename := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+	sampleRate := ""
+	bitRate := ""
+	if file, err := os.Open(filePath); err == nil {
+		if frame := mp3lib.NextFrame(file); frame != nil {
+			sampleRate = fmt.Sprintf("%d", frame.SamplingRate)
+			bitRate = fmt.Sprintf("%d", frame.BitRate/1000)
+		}
+		file.Close()
+	}
+
+	musicReader.SetInfoStoreData(IMusicInfoStoreData{
+		Title:      title,
+		Artist:     artist,
+		Filename:   filename,
+		SampleRate: sampleRate,
+		BitRate:    bitRate,
+	})
 }
 
 func (musicReader *IMusicReader) ResetMusicInfo(filePath string) {
@@ -302,14 +370,17 @@ func (musicReader *IMusicReader) GetNextMusicInfo() *IMusicInfo {
 		return nil
 	}
 
-	if len(SortedSongHashes) == 0 {
+	SongListLock.RLock()
+	songHashes := append([]string(nil), SortedSongHashes...)
+	SongListLock.RUnlock()
+	if len(songHashes) == 0 {
 		return nil
 	}
 
 	// Get or calculate the cached next hash
 	nextHash := musicReader.GetCachedNextHash()
 	if nextHash == "" {
-		nextHash = musicReader.GetNextMusicHash(SortedSongHashes)
+		nextHash = musicReader.GetNextMusicHash(songHashes)
 		musicReader.SetCachedNextHash(nextHash)
 	}
 
@@ -386,6 +457,18 @@ func (musicReader *IMusicReader) SetInfoStoreData(data IMusicInfoStoreData) {
 
 func (musicReader *IMusicReader) SetBufferStoreData(data IMusicReaderStoreData) {
 	musicReader.Store.Store(musicReader.BufferStoreKey, data)
+}
+
+func (musicReader *IMusicReader) GetCurrentSongHash() string {
+	musicReader.Lock.RLock()
+	defer musicReader.Lock.RUnlock()
+	return musicReader.CurrentSongHash
+}
+
+func (musicReader *IMusicReader) SetCurrentSongHash(hash string) {
+	musicReader.Lock.Lock()
+	defer musicReader.Lock.Unlock()
+	musicReader.CurrentSongHash = hash
 }
 
 // Thread-safe getter for CachedNextHash
@@ -918,17 +1001,17 @@ func GetMp3FilePaths() ([]string, error) {
 	}
 
 	// Store sorted hashes globally
+	SongListLock.Lock()
 	SortedSongHashes = hashes
+	SongListLock.Unlock()
 
 	return result, nil
 }
 
-func InitReader() {
-	go func() {
-		MusicReader.StartLoop()
-	}()
+func InitReader() error {
 	Logger.Info(fmt.Sprintf("Music directory is %s.", Config.Directory))
 
 	// Start cache cleanup routine for normalized audio cache
 	StartCacheCleanupRoutine()
+	return StartContinuousStream()
 }

@@ -83,13 +83,13 @@ Example usage:
 ### standard_bitrate
 - **Type**: `string`
 - **Default**: `"128k"`
-- **Description**: Target bitrate for normalized audio. Used when `normalize` is true
+- **Description**: MP3 bitrate produced by the persistent station encoder for both files and live sources
 - **Example**: `"standard_bitrate": "128k"`
 
 ### standard_sample_rate
 - **Type**: `string`
 - **Default**: `"44100"`
-- **Description**: Target sample rate for normalized audio in Hz. Used when `normalize` is true
+- **Description**: Sample rate produced by the persistent station encoder for both files and live sources
 - **Example**: `"standard_sample_rate": "44100"`
 
 ### cache_dir

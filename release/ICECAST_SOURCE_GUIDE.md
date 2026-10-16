@@ -60,13 +60,13 @@ Source clients must send:
 1. **HTTP-like headers** with at least a `Content-Type` header specifying the audio format
 2. **Audio data** following the headers
 
-### Supported Format
+### Supported Formats
 
-The server accepts the following audio content types:
-
-Live audio is passed through without transcoding, so sources must send MP3 as
-`audio/mpeg` (or `audio/mp3`). Convert other input formats to MP3 in FFmpeg
-before sending them to GoStream.
+Live input is decoded by FFmpeg, converted to stereo PCM, and then fed into the
+same persistent MP3 encoder used for file playback. Common formats such as MP3,
+AAC, WAV, and OGG are supported when the bundled or system FFmpeg build supports
+them. The outgoing stream always uses `standard_bitrate` and
+`standard_sample_rate`.
 
 If `username` and `password` are configured, source clients must use HTTP Basic
 Authentication with those credentials.
@@ -219,9 +219,13 @@ You can run both file-based and source-based streaming:
 
 Set `directory` in config to maintain the playlist as a fallback.
 
+The listener-facing MP3 encoder remains running during every transition. A
+short PCM silence fill is used while the next decoder becomes ready, so
+listeners do not need to reconnect or refresh.
+
 ## Performance Considerations
 
-- **Minimal CPU overhead**: Pure Go streaming, minimal encoding
+- **Consistent output**: A persistent FFmpeg encoder produces the configured MP3 format
 - **Memory usage**: ~512KB base + audio buffer
 - **Network**: Bandwidth depends on source bitrate (128k = ~16KB/s)
 
@@ -230,8 +234,6 @@ Set `directory` in config to maintain the playlist as a fallback.
 Potential additions:
 - [ ] Multiple simultaneous sources with mixing
 - [ ] Real-time metadata updates (ICY metadata)
-- [ ] Automatic fallback to playlist when source drops
-- [ ] Audio normalization for live input
 - [ ] Buffer statistics and monitoring
 
 ## See Also

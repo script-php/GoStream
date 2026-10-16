@@ -8,7 +8,7 @@ GoStream is a lightweight MP3 streaming server written in Go. It provides real-t
 - **Synchronized playback** - Multiple clients receive the same audio stream in sync
 - **Playback modes** - Support for both random and sequential track playback
 - **Skip/Next controls** - API endpoints to skip songs and preview the next track
-- **Audio normalization** - Automatic FFmpeg-based audio normalization to standardized bitrate and sample rate for consistent streaming
+- **Continuous audio normalization** - Files and live sources are decoded to PCM and fed through one persistent FFmpeg MP3 encoder at the configured bitrate and sample rate
 - **Stream metadata** - ID3 tag parsing for track title and artist information
 - **Icecast compatibility** - Stats endpoint compatible with Icecast format for player integration
 - **Icecast source input** - Accept live audio from DJ apps and other sources via Icecast protocol
@@ -121,7 +121,7 @@ Create a `config.json` file:
 - `cache_ttl_minutes` (int) - Cache time-to-live in minutes (files older than this are deleted, 0 = no cleanup) - default: 10
 - `icecast_source_port` (int) - Port for Icecast source client connections (0 = disabled) - default: 0
 
-**Note:** Audio normalization is always enabled for consistent stream quality. All songs are automatically normalized to the standard bitrate and sample rate. Command-line arguments take precedence over config file values.
+**Note:** Audio normalization is always enabled. File and live inputs are decoded to stereo PCM, selected without closing the listener stream, and encoded by one persistent MP3 encoder using `standard_bitrate` and `standard_sample_rate`. Command-line arguments take precedence over config file values.
 
 ### Icecast Source Input (Live Audio)
 
@@ -152,7 +152,7 @@ Use any Icecast-compatible source client to push audio to your server:
 # Example with curl and ffmpeg
 ffmpeg -i input.mp3 -f mp3 -b:a 128k - | \
   curl -X SOURCE \
-	-u admin:password \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   --data-binary @- \
   http://localhost:8001/
@@ -163,7 +163,9 @@ ffmpeg -i input.mp3 -f mp3 -b:a 128k - | \
 - Accept audio from DJ apps, ffmpeg, OBS Studio, and standard Icecast source clients
 - Automatic failover to file playlist when source disconnects
 - Broadcast live audio to all connected listeners
+- Accept any audio input format supported by FFmpeg and convert it to the configured MP3 format
 - Full HTTP compatibility
+- Keep existing listener connections open while switching between files and live input
 
 For detailed setup instructions and examples, see [ICECAST_SOURCE_GUIDE.md](release/ICECAST_SOURCE_GUIDE.md).
 

@@ -125,8 +125,9 @@ type IcecastSourceServer struct {
 	listenerID  int64 // Counter for generating listener IDs
 
 	// Statistics
-	bytesReceived int64
-	bytesSent     int64
+	bytesReceived    int64
+	bytesSent        int64
+	sourceGeneration uint64
 }
 
 // IcecastSourceInstance is the singleton instance
@@ -270,10 +271,9 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 		return
 	}
 
-	// Live input is passed through to listeners without transcoding, so only
-	// MP3 is safe to advertise as the station's audio/mpeg stream.
-	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
-	if mediaType != "audio/mpeg" && mediaType != "audio/mp3" {
+	// The continuous live decoder uses FFmpeg, so any supported audio content
+	// type can be converted into the station's configured MP3 output format.
+	if !strings.HasPrefix(strings.ToLower(contentType), "audio/") {
 		Logger.Info(fmt.Sprintf("Icecast source from %s unsupported content-type: %s", remoteAddr, contentType))
 		conn.Write([]byte("HTTP/1.0 415 Unsupported Media Type\r\nContent-Length: 21\r\n\r\nUnsupported Media Type"))
 		return
@@ -298,6 +298,7 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 	}
 	s.sourceMetadata = headers
 	s.currentSourceConn = conn
+	s.sourceGeneration++
 
 	// Clear the audio buffer to remove stale data
 	if s.audioBuffer != nil {
@@ -315,6 +316,9 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 	// Read and buffer audio data
 	buffer := make([]byte, 4096)
 	for {
+		// A source that disappears without a clean TCP close must not leave the
+		// station stuck in live mode indefinitely.
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		n, err := reader.Read(buffer)
 		if err != nil {
 			Logger.Info(fmt.Sprintf("Icecast source from %s disconnected", remoteAddr))
@@ -418,9 +422,24 @@ func (s *IcecastSourceServer) GetSourceMetadata() map[string]string {
 	return meta
 }
 
+// GetSourceGeneration changes whenever a new live source is accepted. The
+// stream engine uses it to restart FFmpeg cleanly when one source replaces
+// another without an inactive interval.
+func (s *IcecastSourceServer) GetSourceGeneration() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sourceGeneration
+}
+
 // BufferSize returns the current number of bytes in the audio buffer
 func (s *IcecastSourceServer) BufferSize() int {
-	return s.audioBuffer.Size()
+	s.mu.RLock()
+	buffer := s.audioBuffer
+	s.mu.RUnlock()
+	if buffer == nil {
+		return 0
+	}
+	return buffer.Size()
 }
 
 // GetStats returns current statistics

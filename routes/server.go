@@ -55,7 +55,11 @@ func GetStats(ctx echo.Context) error {
 
 // SkipSong skips to the next song
 func SkipSong(ctx echo.Context) error {
-	modules.MusicReader.SkipToNext()
+	if modules.StreamEngine != nil {
+		modules.StreamEngine.RequestSkip()
+	} else {
+		modules.MusicReader.SkipToNext()
+	}
 	musicInfo := modules.MusicReader.GetMusicInfo()
 
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
@@ -488,14 +492,8 @@ func EnableIcecastMode(ctx echo.Context) error {
 		})
 	}
 
-	modules.MusicReader.Lock.RLock()
-	alreadyEnabled := modules.MusicReader.IsIcecastMode
-	modules.MusicReader.Lock.RUnlock()
-
-	if !alreadyEnabled {
-		modules.MusicReader.EnableIcecastMode()
-		go modules.MusicReader.ProcessIcecastStream()
-	}
+	// Source selection is automatic in the continuous stream engine. The mode
+	// endpoint remains for API compatibility and status reporting.
 
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"status":  "success",
@@ -506,7 +504,12 @@ func EnableIcecastMode(ctx echo.Context) error {
 
 // DisableIcecastMode manually switches back to file streaming (optional - normally automatic)
 func DisableIcecastMode(ctx echo.Context) error {
-	modules.MusicReader.DisableIcecastMode()
+	if modules.IcecastSource != nil && modules.IcecastSource.HasActiveSource() {
+		return ctx.JSON(http.StatusConflict, map[string]interface{}{
+			"status":  "error",
+			"message": "Disconnect the active live source to return to file mode without interrupting listeners.",
+		})
+	}
 
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"status":  "success",

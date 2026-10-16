@@ -181,8 +181,9 @@ func CleanOldCacheFiles() error {
 	protectedFiles := make(map[string]bool)
 
 	// Protect the next song cache file
-	if MusicReader.CachedNextHash != "" {
-		if nextFilePath, exists := FindSongByHash(MusicReader.CachedNextHash); exists {
+	cachedNextHash := MusicReader.GetCachedNextHash()
+	if cachedNextHash != "" {
+		if nextFilePath, exists := FindSongByHash(cachedNextHash); exists {
 			protectedPath := GetCachedPath(nextFilePath)
 			protectedFiles[protectedPath] = true
 			Logger.Debug(fmt.Sprintf("Protecting next song cache: %s", filepath.Base(protectedPath)))
