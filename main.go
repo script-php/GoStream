@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"gostream/middlewares"
 	"gostream/modules"
 	"gostream/routes"
+	"net/http"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -47,8 +49,18 @@ func main() {
 
 	routes.InitRoutes(e)
 
-	err := e.Start(fmt.Sprintf("%s:%d", modules.Config.Host, modules.Config.Port))
-	if err != nil {
-		modules.Logger.Error(err)
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- e.Start(fmt.Sprintf("%s:%d", modules.Config.Host, modules.Config.Port))
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			modules.Logger.Error(err)
+		}
+	case err := <-modules.StreamEngine.Failure():
+		modules.Logger.Error(fmt.Sprintf("Fatal stream engine failure: %v; shutting down for supervisor restart", err))
+		_ = e.Close()
 	}
 }

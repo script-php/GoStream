@@ -49,7 +49,27 @@ func GetFMStream(ctx echo.Context) error {
 
 	res := ctx.Response()
 
-	store := modules.MusicReader.GetBufferStoreData()
+	// The persistent encoder needs a short moment to produce its first MP3
+	// frames. Hold an early listener request instead of forcing the player to
+	// fail and reconnect during server startup.
+	var store *modules.IMusicReaderStoreData
+	readyTimer := time.NewTimer(5 * time.Second)
+	readyTicker := time.NewTicker(20 * time.Millisecond)
+	defer readyTimer.Stop()
+	defer readyTicker.Stop()
+	for store == nil || len(store.InitialBuffer) == 0 {
+		store = modules.MusicReader.GetBufferStoreData()
+		if store != nil && len(store.InitialBuffer) > 0 {
+			break
+		}
+		select {
+		case <-ctx.Request().Context().Done():
+			return nil
+		case <-readyTimer.C:
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "stream is starting")
+		case <-readyTicker.C:
+		}
+	}
 	if store == nil {
 		err := errors.New("oops, it seems like the FM hasn't started up")
 		modules.Logger.Error(fmt.Sprintf("[%s] %v", requestID, err))
@@ -148,7 +168,11 @@ func GetFMStream(ctx echo.Context) error {
 				}
 			}
 
-			time.Sleep(time.Millisecond * 100)
+			select {
+			case <-ctx.Request().Context().Done():
+				return nil
+			case <-time.After(100 * time.Millisecond):
+			}
 			continue
 		}
 

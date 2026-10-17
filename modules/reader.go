@@ -174,7 +174,7 @@ func (musicReader *IMusicReader) chooseNextMusic() (string, string, error) {
 		}
 	}
 
-	// Determine the NEXT song to be cached and pre-transcoded
+	// Determine the next song for playlist/random/sequential selection.
 	// Priority 1: Check if there are songs in the playlist
 	var nextHash string
 	musicReader.Lock.Lock()
@@ -1044,7 +1044,5 @@ func GetMp3FilePaths() ([]string, error) {
 func InitReader() error {
 	Logger.Info(fmt.Sprintf("Music directory is %s.", Config.Directory))
 
-	// Start cache cleanup routine for normalized audio cache
-	StartCacheCleanupRoutine()
 	return StartContinuousStream()
 }

@@ -62,14 +62,16 @@ Source clients must send:
 
 ### Supported Formats
 
-Live input is decoded by FFmpeg, converted to stereo PCM, and then fed into the
-same persistent MP3 encoder used for file playback. Common formats such as MP3,
-AAC, WAV, and OGG are supported when the bundled or system FFmpeg build supports
-them. The outgoing stream always uses `standard_bitrate` and
-`standard_sample_rate`.
+GoStream inspects an MP3 source's bitrate, sample rate, and channel count. When
+all three match the configured station output, its MP3 bytes are forwarded
+unchanged. A mismatched MP3 source is decoded and re-encoded by FFmpeg. Other
+audio formats such as AAC, WAV, and OGG are also converted when the installed
+FFmpeg build supports them.
 
 If `username` and `password` are configured, source clients must use HTTP Basic
-Authentication with those credentials.
+Authentication with those credentials. Both values must be configured together.
+Basic Authentication is not encrypted, so expose the source port only through a
+trusted network, firewall/VPN, or TLS proxy.
 
 ### Example Source Connection (Using curl)
 
@@ -96,10 +98,9 @@ ffmpeg -i input.mp3 -f mp3 -c:a libmp3lame -ab 128k - | \
 ### Using Popular DJ/Streaming Apps
 
 #### OBS Studio
-1. Settings → Stream
-2. Service: Custom RTMP Server
-3. Server: `rtmps://localhost:8001` (note: RTMP not directly supported, use transcoding)
-4. Or use **VirtualAudio** + ffmpeg workaround
+
+GoStream does not accept RTMP or RTMPS directly. Route OBS audio through a tool
+that can publish an Icecast-compatible HTTP source, such as FFmpeg.
 
 #### WinAmp / Shoutcast Plugin
 1. Configure plugin to stream to:
@@ -171,7 +172,7 @@ curl http://localhost:8090/stats
 
 ### Audio Buffering
 
-- Audio is buffered in-memory with a 128-chunk buffer
+- Audio is buffered in memory using a capacity derived from the configured 512 KiB source buffer
 - If buffer fills up, oldest chunks are dropped
 - This prevents memory overflow on slow listeners
 
@@ -199,9 +200,9 @@ curl http://localhost:8090/stats
 
 ### Audio sounds distorted
 
-1. **Check bitrate**: Use consistent bitrates (128k recommended)
-2. **Check sample rate**: Use 44100 Hz (standard)
-3. **Verify format**: Test with different encodings
+1. Check the log for either `Live MP3 passthrough started` or `FFmpeg transcoding enabled`
+2. Confirm the source network connection is stable and is not exhausting the source buffer
+3. Test the same source in direct MP3 passthrough mode to separate transport problems from transcoding problems
 
 ### Connection drops
 
@@ -219,13 +220,14 @@ You can run both file-based and source-based streaming:
 
 Set `directory` in config to maintain the playlist as a fallback.
 
-The listener-facing MP3 encoder remains running during every transition. A
-short PCM silence fill is used while the next decoder becomes ready, so
-listeners do not need to reconnect or refresh.
+The listener-facing HTTP connection remains open during every transition. The
+persistent station encoder continues across file and transcoded-live modes;
+matching live MP3 temporarily bypasses that encoder. A short silence fill is
+used while a decoder becomes ready.
 
 ## Performance Considerations
 
-- **Consistent output**: A persistent FFmpeg encoder produces the configured MP3 format
+- **Hybrid output**: Matching MP3 is passed through; all other inputs use the configured FFmpeg output
 - **Memory usage**: ~512KB base + audio buffer
 - **Network**: Bandwidth depends on source bitrate (128k = ~16KB/s)
 

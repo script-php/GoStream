@@ -260,9 +260,6 @@ func SetNextSong(ctx echo.Context) error {
 	// Set the cached next hash
 	modules.MusicReader.SetCachedNextHash(hash)
 
-	// Pre-transcode the song in background so it's ready when it plays
-	go modules.PreTranscodeAudioAsync(filePath)
-
 	// Get info about the song we just set
 	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	title := filepath.Base(filePath)

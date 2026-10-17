@@ -15,6 +15,8 @@ import (
 	"gostream/conf"
 )
 
+const maxRemoteConfigSize = 1 << 20 // 1 MiB
+
 type IConfig struct {
 	Port               int
 	Host               string
@@ -88,7 +90,8 @@ func LoadConfigFromFile(filepath string) (*JSONConfig, error) {
 
 // LoadConfigFromURL loads configuration from a remote JSON URL
 func LoadConfigFromURL(url string) (*JSONConfig, error) {
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch config from URL: %w", err)
 	}
@@ -98,9 +101,12 @@ func LoadConfigFromURL(url string) (*JSONConfig, error) {
 		return nil, fmt.Errorf("failed to fetch config, status code: %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteConfigSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if len(data) > maxRemoteConfigSize {
+		return nil, fmt.Errorf("remote config exceeds %d bytes", maxRemoteConfigSize)
 	}
 
 	var config JSONConfig
@@ -110,6 +116,19 @@ func LoadConfigFromURL(url string) (*JSONConfig, error) {
 	}
 
 	return &config, nil
+}
+
+// ValidateConfig rejects ambiguous security settings. Authentication is either
+// fully configured or fully disabled; a typo must never silently expose the
+// source input or administrative endpoints.
+func ValidateConfig(config *IConfig) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if (config.Username == "") != (config.Password == "") {
+		return fmt.Errorf("username and password must either both be set or both be empty")
+	}
+	return nil
 }
 
 // LoadConfig loads configuration from file or URL
@@ -304,6 +323,9 @@ func init() {
 		MetaInterval:       metaInterval,
 		Username:           username,
 		Password:           password,
+	}
+	if err := ValidateConfig(Config); err != nil {
+		log.Fatal("Invalid configuration: ", err)
 	}
 }
 

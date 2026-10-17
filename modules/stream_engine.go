@@ -20,9 +20,9 @@ const (
 	encoderHeadroom   = "-2dB"
 )
 
-// ContinuousStreamEngine owns the station's single, persistent MP3 encoder.
-// File and live decoders feed identical PCM into it, so changing sources never
-// closes the listener-facing MP3 timeline.
+// ContinuousStreamEngine owns the station's persistent file/transcoding MP3
+// encoder. Matching live MP3 can bypass it; all other inputs feed PCM through
+// it while the listener-facing HTTP connection remains open.
 type ContinuousStreamEngine struct {
 	ffmpegPath string
 	sampleRate int
@@ -32,6 +32,7 @@ type ContinuousStreamEngine struct {
 	encoderInput io.WriteCloser
 	encoderOut   io.ReadCloser
 	encoderDone  chan struct{}
+	failureCh    chan error
 
 	stopCh chan struct{}
 	skipCh chan struct{}
@@ -97,6 +98,7 @@ func NewContinuousStreamEngine() (*ContinuousStreamEngine, error) {
 		stopCh:      make(chan struct{}),
 		skipCh:      make(chan struct{}, 1),
 		encoderDone: make(chan struct{}),
+		failureCh:   make(chan error, 1),
 	}, nil
 }
 
@@ -142,8 +144,22 @@ func (engine *ContinuousStreamEngine) Start() error {
 	engine.wg.Add(3)
 	go func() {
 		defer engine.wg.Done()
-		engine.encoder.Wait()
+		err := engine.encoder.Wait()
 		close(engine.encoderDone)
+		select {
+		case <-engine.stopCh:
+			return
+		default:
+		}
+		if err == nil {
+			err = fmt.Errorf("persistent MP3 encoder exited unexpectedly")
+		} else {
+			err = fmt.Errorf("persistent MP3 encoder exited: %w", err)
+		}
+		select {
+		case engine.failureCh <- err:
+		default:
+		}
 	}()
 	go func() {
 		defer engine.wg.Done()
@@ -156,6 +172,12 @@ func (engine *ContinuousStreamEngine) Start() error {
 
 	Logger.Info(fmt.Sprintf("Continuous stream encoder started (%s, %d Hz, stereo)", Config.StandardBitrate, engine.sampleRate))
 	return nil
+}
+
+// Failure reports a fatal stream-engine failure. The application should exit
+// so its process supervisor can restart the complete audio pipeline cleanly.
+func (engine *ContinuousStreamEngine) Failure() <-chan error {
+	return engine.failureCh
 }
 
 func (engine *ContinuousStreamEngine) Stop() {
@@ -413,8 +435,8 @@ func (engine *ContinuousStreamEngine) publishUnit(unit []byte, timeout int) {
 }
 
 // startLiveMP3Passthrough forwards the exact MP3 bytes supplied by Mixxx. It
-// publishes at most five times per second so the single-value listener store
-// cannot overwrite rapid source chunks before clients observe them.
+// publishes at most five times per second; the bounded listener history keeps
+// every published unit available to clients that are briefly behind.
 func (engine *ContinuousStreamEngine) startLiveMP3Passthrough(generation uint64) {
 	engine.liveMP3Passthrough.Store(true)
 	MusicReader.SetInfoStoreData(IMusicInfoStoreData{

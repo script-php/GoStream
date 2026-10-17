@@ -16,6 +16,11 @@ import (
 	"github.com/dmulholl/mp3lib"
 )
 
+const (
+	maxIcecastHeaderBytes = 64 * 1024
+	icecastHeaderTimeout  = 10 * time.Second
+)
+
 // AudioBuffer is a simple channel-based buffer for managing audio data
 type AudioBuffer struct {
 	ch       chan []byte
@@ -183,9 +188,14 @@ func (s *IcecastSourceServer) Start() error {
 		return fmt.Errorf("icecast server already running")
 	}
 
-	ln, err := net.Listen("tcp", ":"+s.Port)
+	host := Config.Host
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	address := net.JoinHostPort(host, s.Port)
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		return fmt.Errorf("failed to listen on port %s: %v", s.Port, err)
+		return fmt.Errorf("failed to listen on %s: %v", address, err)
 	}
 
 	s.mu.Lock()
@@ -193,7 +203,7 @@ func (s *IcecastSourceServer) Start() error {
 	s.ln = ln
 	s.mu.Unlock()
 
-	Logger.Info(fmt.Sprintf("Icecast source server listening on port %s", s.Port))
+	Logger.Info(fmt.Sprintf("Icecast source server listening on %s", address))
 
 	go func() {
 		defer ln.Close()
@@ -262,15 +272,25 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 	Logger.Info(fmt.Sprintf("New Icecast source connection from %s", remoteAddr))
 
 	reader := bufio.NewReader(conn)
+	if err := conn.SetReadDeadline(time.Now().Add(icecastHeaderTimeout)); err != nil {
+		Logger.Debug(fmt.Sprintf("Could not set Icecast header deadline for %s: %v", remoteAddr, err))
+	}
 
 	// Read HTTP-like headers from source client (like Icecast does)
 	headers := make(map[string]string)
 	contentType := ""
 
+	headerBytes := 0
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			Logger.Error(fmt.Sprintf("Error reading Icecast headers from %s: %v", remoteAddr, err))
+			return
+		}
+		headerBytes += len(line)
+		if headerBytes > maxIcecastHeaderBytes {
+			Logger.Info(fmt.Sprintf("Icecast source from %s sent oversized headers", remoteAddr))
+			conn.Write([]byte("HTTP/1.0 431 Request Header Fields Too Large\r\nContent-Length: 17\r\n\r\nHeaders Too Large"))
 			return
 		}
 
@@ -309,9 +329,10 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 		return
 	}
 
-	// Reuse the configured API credentials for source authentication. Leaving
-	// either value empty preserves the documented unauthenticated mode.
-	if Config.Username != "" && Config.Password != "" {
+	// Reuse the configured API credentials for source authentication. Both
+	// values empty is the explicit unauthenticated mode; partial pairs are
+	// rejected during configuration validation.
+	if Config.Username != "" || Config.Password != "" {
 		expected := "Basic " + base64.StdEncoding.EncodeToString([]byte(Config.Username+":"+Config.Password))
 		provided := headers["authorization"]
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
@@ -345,6 +366,7 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 	Logger.Info(fmt.Sprintf("Icecast source from %s accepted (content-type: %s, transfer-encoding: %s)", remoteAddr, contentType, transferEncoding))
 
 	// Read and buffer audio data
+	_ = conn.SetReadDeadline(time.Time{})
 	bodyReader := icecastBodyReader(reader, headers)
 	buffer := make([]byte, 4096)
 	for {
