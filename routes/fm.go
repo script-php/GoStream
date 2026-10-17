@@ -1,9 +1,9 @@
 package routes
 
 import (
-	"gostream/modules"
 	"errors"
 	"fmt"
+	"gostream/modules"
 	"net/http"
 	"strings"
 	"time"
@@ -17,21 +17,21 @@ import (
 func BuildIcecastMetadata(filename, url string) []byte {
 	// Build metadata string: StreamTitle='Filename';StreamUrl='url';
 	metadataStr := fmt.Sprintf("StreamTitle='%s';StreamUrl='%s';", filename, url)
-	
+
 	// Calculate length in 16-byte blocks (rounded up)
 	metadataLen := len(metadataStr)
 	blockCount := (metadataLen + 15) / 16 // Round up to nearest 16-byte block
-	
+
 	// Create full metadata block with 1-byte length header + metadata + padding
 	totalLen := 1 + (blockCount * 16)
 	metadataBlock := make([]byte, totalLen)
-	
+
 	// First byte is the length in 16-byte blocks
 	metadataBlock[0] = byte(blockCount)
-	
+
 	// Copy metadata string after the length byte
 	copy(metadataBlock[1:], metadataStr)
-	
+
 	// Rest is null-padded (already zero-initialized)
 	return metadataBlock
 }
@@ -49,7 +49,27 @@ func GetFMStream(ctx echo.Context) error {
 
 	res := ctx.Response()
 
-	store := modules.MusicReader.GetBufferStoreData()
+	// The persistent encoder needs a short moment to produce its first MP3
+	// frames. Hold an early listener request instead of forcing the player to
+	// fail and reconnect during server startup.
+	var store *modules.IMusicReaderStoreData
+	readyTimer := time.NewTimer(5 * time.Second)
+	readyTicker := time.NewTicker(20 * time.Millisecond)
+	defer readyTimer.Stop()
+	defer readyTicker.Stop()
+	for store == nil || len(store.InitialBuffer) == 0 {
+		store = modules.MusicReader.GetBufferStoreData()
+		if store != nil && len(store.InitialBuffer) > 0 {
+			break
+		}
+		select {
+		case <-ctx.Request().Context().Done():
+			return nil
+		case <-readyTimer.C:
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "stream is starting")
+		case <-readyTicker.C:
+		}
+	}
 	if store == nil {
 		err := errors.New("oops, it seems like the FM hasn't started up")
 		modules.Logger.Error(fmt.Sprintf("[%s] %v", requestID, err))
@@ -61,7 +81,7 @@ func GetFMStream(ctx echo.Context) error {
 	res.Header().Set("X-Content-Type-Options", "nosniff")
 	res.Header().Set("Transfer-Encoding", "chunked")
 	res.Header().Set("Content-Type", "audio/mpeg")
-	
+
 	// Set Shoutcast metadata headers
 	// icy-name from station name
 	if modules.Config.Name != "" {
@@ -100,7 +120,7 @@ func GetFMStream(ctx echo.Context) error {
 	if metaintInterval <= 0 {
 		metaintInterval = 8192 // Default if not configured
 	}
-	
+
 	if wantMetadata {
 		// Set icy-metaint header to tell client where metadata blocks are
 		res.Header().Set("icy-metaint", fmt.Sprintf("%d", metaintInterval))
@@ -108,8 +128,8 @@ func GetFMStream(ctx echo.Context) error {
 
 	init := false
 	order := 0
-	sinceMetaBlock := 0 // Track bytes sent since last metadata (Icecast style)
-	lastBufferUpdateTime := time.Now() // Track when we last got new data
+	sinceMetaBlock := 0                  // Track bytes sent since last metadata (Icecast style)
+	lastBufferUpdateTime := time.Now()   // Track when we last got new data
 	maxNoDataTimeout := 30 * time.Second // Force heartbeat if no data after 30s
 
 	for {
@@ -119,10 +139,10 @@ func GetFMStream(ctx echo.Context) error {
 		// Lock while reading store to prevent race condition
 		modules.MusicReader.Lock.RLock()
 		store := modules.MusicReader.GetBufferStoreData()
-		
+
 		if store.Order == order {
 			modules.MusicReader.Lock.RUnlock()
-			
+
 			// Check if we haven't received data for too long
 			// Send heartbeat metadata to keep connection alive
 			if wantMetadata && time.Since(lastBufferUpdateTime) > maxNoDataTimeout {
@@ -147,8 +167,12 @@ func GetFMStream(ctx echo.Context) error {
 					lastBufferUpdateTime = time.Now()
 				}
 			}
-			
-			time.Sleep(time.Millisecond * 100)
+
+			select {
+			case <-ctx.Request().Context().Done():
+				return nil
+			case <-time.After(100 * time.Millisecond):
+			}
 			continue
 		}
 
@@ -158,11 +182,17 @@ func GetFMStream(ctx echo.Context) error {
 			init = true
 			targetBuffer = store.InitialBuffer[:]
 		} else {
-			targetBuffer = store.UnitBuffer[:]
+			var complete bool
+			targetBuffer, complete = modules.MusicReader.GetBufferUnitsAfter(order, currentOrder)
+			if !complete {
+				// The listener fell farther behind than the bounded history. Send
+				// the current rolling buffer so its MP3 decoder can resynchronize.
+				targetBuffer = store.InitialBuffer[:]
+			}
 		}
 		timeout := store.Timeout
 		modules.MusicReader.Lock.RUnlock()
-		
+
 		order = currentOrder
 		bufLen := len(targetBuffer)
 		lastBufferUpdateTime = time.Now() // Update timestamp since we got new buffer data
@@ -180,7 +210,7 @@ func GetFMStream(ctx echo.Context) error {
 			for offset < bufLen {
 				// Calculate how many bytes until metadata boundary
 				remaining := metaintInterval - sinceMetaBlock
-				
+
 				// How much of this buffer to send
 				toSend := remaining
 				if offset+toSend > bufLen {

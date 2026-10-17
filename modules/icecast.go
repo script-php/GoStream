@@ -2,11 +2,23 @@ package modules
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
+	"net/http/httputil"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dmulholl/mp3lib"
+)
+
+const (
+	maxIcecastHeaderBytes = 64 * 1024
+	icecastHeaderTimeout  = 10 * time.Second
 )
 
 // AudioBuffer is a simple channel-based buffer for managing audio data
@@ -14,6 +26,7 @@ type AudioBuffer struct {
 	ch       chan []byte
 	isActive bool
 	mu       sync.Mutex
+	probe    []byte
 }
 
 // NewAudioBuffer creates a new audio buffer
@@ -34,16 +47,27 @@ func NewAudioBuffer(maxSize int) *AudioBuffer {
 
 // Write adds data to the buffer (tries hard not to drop, but will if buffer backs up)
 func (ab *AudioBuffer) Write(data []byte) (int, error) {
+	// The source connection reuses its socket read buffer. Queue an owned copy
+	// so a later Read cannot overwrite MP3 bytes that are still waiting here.
+	owned := append([]byte(nil), data...)
+
 	ab.mu.Lock()
 	defer ab.mu.Unlock()
 
 	if !ab.isActive {
 		return 0, fmt.Errorf("buffer closed")
 	}
+	if len(ab.probe) < 64*1024 {
+		remaining := 64*1024 - len(ab.probe)
+		if remaining > len(owned) {
+			remaining = len(owned)
+		}
+		ab.probe = append(ab.probe, owned[:remaining]...)
+	}
 
 	// Try to send, non-blocking first
 	select {
-	case ab.ch <- data:
+	case ab.ch <- owned:
 		return len(data), nil
 	default:
 		// Buffer full, try to make room by draining up to 3 chunks
@@ -52,7 +76,7 @@ func (ab *AudioBuffer) Write(data []byte) (int, error) {
 			case <-ab.ch:
 				// Made room, try again
 				select {
-				case ab.ch <- data:
+				case ab.ch <- owned:
 					return len(data), nil
 				default:
 					// Still full, continue trying to drain
@@ -70,6 +94,12 @@ func (ab *AudioBuffer) Write(data []byte) (int, error) {
 	}
 }
 
+func (ab *AudioBuffer) ProbeBytes() []byte {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+	return append([]byte(nil), ab.probe...)
+}
+
 // ReadTimeout retrieves data from buffer with timeout
 func (ab *AudioBuffer) ReadTimeout(timeout time.Duration) ([]byte, error) {
 	ab.mu.Lock()
@@ -81,7 +111,10 @@ func (ab *AudioBuffer) ReadTimeout(timeout time.Duration) ([]byte, error) {
 	}
 
 	select {
-	case data := <-ab.ch:
+	case data, ok := <-ab.ch:
+		if !ok {
+			return nil, fmt.Errorf("buffer closed")
+		}
 		return data, nil
 	case <-time.After(timeout):
 		return nil, nil
@@ -115,13 +148,21 @@ type IcecastSourceServer struct {
 	sourceMetadata    map[string]string
 
 	// Listener tracking
-	listeners      map[string]chan []byte // Map of listener ID to channel
-	listenersMu    sync.RWMutex
-	listenerID     int64 // Counter for generating listener IDs
+	listeners   map[string]chan []byte // Map of listener ID to channel
+	listenersMu sync.RWMutex
+	listenerID  int64 // Counter for generating listener IDs
 
 	// Statistics
-	bytesReceived int64
-	bytesSent     int64
+	bytesReceived    int64
+	bytesSent        int64
+	sourceGeneration uint64
+}
+
+func icecastBodyReader(reader *bufio.Reader, headers map[string]string) io.Reader {
+	if strings.Contains(strings.ToLower(headers["transfer-encoding"]), "chunked") {
+		return httputil.NewChunkedReader(reader)
+	}
+	return reader
 }
 
 // IcecastSourceInstance is the singleton instance
@@ -147,9 +188,14 @@ func (s *IcecastSourceServer) Start() error {
 		return fmt.Errorf("icecast server already running")
 	}
 
-	ln, err := net.Listen("tcp", ":"+s.Port)
+	host := Config.Host
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	address := net.JoinHostPort(host, s.Port)
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		return fmt.Errorf("failed to listen on port %s: %v", s.Port, err)
+		return fmt.Errorf("failed to listen on %s: %v", address, err)
 	}
 
 	s.mu.Lock()
@@ -157,7 +203,7 @@ func (s *IcecastSourceServer) Start() error {
 	s.ln = ln
 	s.mu.Unlock()
 
-	Logger.Info(fmt.Sprintf("Icecast source server listening on port %s", s.Port))
+	Logger.Info(fmt.Sprintf("Icecast source server listening on %s", address))
 
 	go func() {
 		defer ln.Close()
@@ -226,15 +272,25 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 	Logger.Info(fmt.Sprintf("New Icecast source connection from %s", remoteAddr))
 
 	reader := bufio.NewReader(conn)
+	if err := conn.SetReadDeadline(time.Now().Add(icecastHeaderTimeout)); err != nil {
+		Logger.Debug(fmt.Sprintf("Could not set Icecast header deadline for %s: %v", remoteAddr, err))
+	}
 
 	// Read HTTP-like headers from source client (like Icecast does)
 	headers := make(map[string]string)
 	contentType := ""
 
+	headerBytes := 0
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			Logger.Error(fmt.Sprintf("Error reading Icecast headers from %s: %v", remoteAddr, err))
+			return
+		}
+		headerBytes += len(line)
+		if headerBytes > maxIcecastHeaderBytes {
+			Logger.Info(fmt.Sprintf("Icecast source from %s sent oversized headers", remoteAddr))
+			conn.Write([]byte("HTTP/1.0 431 Request Header Fields Too Large\r\nContent-Length: 17\r\n\r\nHeaders Too Large"))
 			return
 		}
 
@@ -265,34 +321,59 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 		return
 	}
 
-	// Only accept audio content types
-	if !strings.HasPrefix(contentType, "audio/") {
+	// The continuous live decoder uses FFmpeg, so any supported audio content
+	// type can be converted into the station's configured MP3 output format.
+	if !strings.HasPrefix(strings.ToLower(contentType), "audio/") {
 		Logger.Info(fmt.Sprintf("Icecast source from %s unsupported content-type: %s", remoteAddr, contentType))
 		conn.Write([]byte("HTTP/1.0 415 Unsupported Media Type\r\nContent-Length: 21\r\n\r\nUnsupported Media Type"))
 		return
 	}
 
+	// Reuse the configured API credentials for source authentication. Both
+	// values empty is the explicit unauthenticated mode; partial pairs are
+	// rejected during configuration validation.
+	if Config.Username != "" || Config.Password != "" {
+		expected := "Basic " + base64.StdEncoding.EncodeToString([]byte(Config.Username+":"+Config.Password))
+		provided := headers["authorization"]
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			Logger.Info(fmt.Sprintf("Unauthorized Icecast source connection from %s", remoteAddr))
+			conn.Write([]byte("HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"GoStream Source\"\r\nContent-Length: 12\r\n\r\nUnauthorized"))
+			return
+		}
+	}
+
 	// Store metadata
 	s.mu.Lock()
+	if s.currentSourceConn != nil && s.currentSourceConn != conn {
+		s.currentSourceConn.Close()
+	}
 	s.sourceMetadata = headers
 	s.currentSourceConn = conn
+	s.sourceGeneration++
 
 	// Clear the audio buffer to remove stale data
 	if s.audioBuffer != nil {
 		s.audioBuffer.Close()
 	}
-	s.audioBuffer = NewAudioBuffer(512 * 1024)
+	sourceBuffer := NewAudioBuffer(512 * 1024)
+	s.audioBuffer = sourceBuffer
 
 	s.mu.Unlock()
 
 	// Send success response
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
-	Logger.Info(fmt.Sprintf("Icecast source from %s accepted (content-type: %s)", remoteAddr, contentType))
+	transferEncoding := headers["transfer-encoding"]
+	Logger.Info(fmt.Sprintf("Icecast source from %s accepted (content-type: %s, transfer-encoding: %s)", remoteAddr, contentType, transferEncoding))
 
 	// Read and buffer audio data
+	_ = conn.SetReadDeadline(time.Time{})
+	bodyReader := icecastBodyReader(reader, headers)
 	buffer := make([]byte, 4096)
 	for {
-		n, err := reader.Read(buffer)
+		// A source that disappears without a clean TCP close must not leave the
+		// station stuck in live mode indefinitely.
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		n, err := bodyReader.Read(buffer)
 		if err != nil {
 			Logger.Info(fmt.Sprintf("Icecast source from %s disconnected", remoteAddr))
 			s.mu.Lock()
@@ -305,7 +386,7 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 		}
 
 		// Write to buffer (non-blocking, drops oldest chunks if full)
-		_, err = s.audioBuffer.Write(buffer[:n])
+		_, err = sourceBuffer.Write(buffer[:n])
 		if err != nil {
 			Logger.Info(fmt.Sprintf("Icecast source %s: buffer write error: %v", remoteAddr, err))
 			return
@@ -361,7 +442,14 @@ func (s *IcecastSourceServer) BroadcastAudio(data []byte) {
 
 // GetAudioChunk retrieves the next audio chunk from the buffer
 func (s *IcecastSourceServer) GetAudioChunk() ([]byte, bool) {
-	chunk, err := s.audioBuffer.ReadTimeout(100 * time.Millisecond)
+	s.mu.RLock()
+	buffer := s.audioBuffer
+	s.mu.RUnlock()
+	if buffer == nil {
+		return nil, false
+	}
+
+	chunk, err := buffer.ReadTimeout(100 * time.Millisecond)
 	if err != nil || len(chunk) == 0 {
 		return nil, false
 	}
@@ -388,9 +476,55 @@ func (s *IcecastSourceServer) GetSourceMetadata() map[string]string {
 	return meta
 }
 
+// GetSourceGeneration changes whenever a new live source is accepted. The
+// stream engine uses it to restart FFmpeg cleanly when one source replaces
+// another without an inactive interval.
+func (s *IcecastSourceServer) GetSourceGeneration() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sourceGeneration
+}
+
+// IsMP3Source reports whether the active source can be forwarded directly to
+// listeners without decoding or re-encoding.
+func (s *IcecastSourceServer) IsMP3Source() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(s.sourceMetadata["content-type"], ";", 2)[0]))
+	return mediaType == "audio/mpeg" || mediaType == "audio/mp3"
+}
+
+// MP3MatchesConfiguredOutput inspects the first complete MP3 frame without
+// consuming source bytes. ready is false until enough source data has arrived
+// to make a routing decision.
+func (s *IcecastSourceServer) MP3MatchesConfiguredOutput() (matches, ready bool) {
+	s.mu.RLock()
+	buffer := s.audioBuffer
+	s.mu.RUnlock()
+	if buffer == nil {
+		return false, false
+	}
+	probe := buffer.ProbeBytes()
+	frame := mp3lib.NextFrame(bytes.NewReader(probe))
+	if frame == nil {
+		return false, len(probe) >= 64*1024
+	}
+	channels := 2
+	if frame.ChannelMode == mp3lib.Mono {
+		channels = 1
+	}
+	return frame.BitRate == configuredBitrateBps() && frame.SamplingRate == configuredSampleRate() && channels == pcmChannels, true
+}
+
 // BufferSize returns the current number of bytes in the audio buffer
 func (s *IcecastSourceServer) BufferSize() int {
-	return s.audioBuffer.Size()
+	s.mu.RLock()
+	buffer := s.audioBuffer
+	s.mu.RUnlock()
+	if buffer == nil {
+		return 0
+	}
+	return buffer.Size()
 }
 
 // GetStats returns current statistics

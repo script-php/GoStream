@@ -8,7 +8,7 @@ GoStream is a lightweight MP3 streaming server written in Go. It provides real-t
 - **Synchronized playback** - Multiple clients receive the same audio stream in sync
 - **Playback modes** - Support for both random and sequential track playback
 - **Skip/Next controls** - API endpoints to skip songs and preview the next track
-- **Audio normalization** - Automatic FFmpeg-based audio normalization to standardized bitrate and sample rate for consistent streaming
+- **Continuous hybrid audio pipeline** - Files and incompatible live sources use FFmpeg; matching MP3 live sources are passed through unchanged to avoid unnecessary quality loss
 - **Stream metadata** - ID3 tag parsing for track title and artist information
 - **Icecast compatibility** - Stats endpoint compatible with Icecast format for player integration
 - **Icecast source input** - Accept live audio from DJ apps and other sources via Icecast protocol
@@ -64,6 +64,7 @@ The server will start on port 8090 by default.
 - `-gap int` - Gap/silence between songs in milliseconds (default: 500)
 - `-icecast-source-port int` - Port for Icecast source client connections (default: 0 = disabled)
 - `-c string` - Load configuration from JSON file or URL
+- `-register` - Register as systemd service (requires sudo and -c flag) - Linux only
 - `-h` - Show help information
 
 ### Configuration File
@@ -89,7 +90,10 @@ Create a `config.json` file:
   "standard_bitrate": "128k",
   "standard_sample_rate": "44100",
   "cache_dir": ".cache",
-  "cache_ttl_minutes": 10
+  "cache_ttl_minutes": 10,
+  "icecast_source_port": 8001,
+  "username": "admin",
+  "password": "change-me"
 }
 ```
 
@@ -114,13 +118,13 @@ Create a `config.json` file:
 - `random` (bool) - Enable random playback mode
 - `debug` (bool) - Enable debug mode
 - `gap_ms` (int) - Gap/silence between songs in milliseconds
-- `standard_bitrate` (string) - Bitrate for normalized audio (e.g., "128k", "192k", "256k") - default: "128k"
-- `standard_sample_rate` (string) - Sample rate for normalized audio (e.g., "44100", "48000") - default: "44100"
-- `cache_dir` (string) - Directory to store cached normalized files - default: ".cache"
-- `cache_ttl_minutes` (int) - Cache time-to-live in minutes (files older than this are deleted, 0 = no cleanup) - default: 10
+- `standard_bitrate` (string) - Station output bitrate (e.g., "128k", "192k", "256k") - default: "128k"
+- `standard_sample_rate` (string) - Station output sample rate (e.g., "44100", "48000") - default: "44100"
+- `cache_dir` / `cache_ttl_minutes` - Deprecated legacy-reader compatibility options
 - `icecast_source_port` (int) - Port for Icecast source client connections (0 = disabled) - default: 0
+- `username` / `password` (string) - Credentials shared by administrative API endpoints and live source connections; set both or leave both empty
 
-**Note:** Audio normalization is always enabled for consistent stream quality. All songs are automatically normalized to the standard bitrate and sample rate. Command-line arguments take precedence over config file values.
+**Note:** Files are decoded to stereo PCM and encoded by the persistent station encoder. A live MP3 source bypasses FFmpeg only when its bitrate, sample rate, and channel count match the configured output. Different MP3 parameters and non-MP3 live formats are converted by FFmpeg. Switching sources does not close existing listener connections. Command-line arguments take precedence over config file values.
 
 ### Icecast Source Input (Live Audio)
 
@@ -151,6 +155,7 @@ Use any Icecast-compatible source client to push audio to your server:
 # Example with curl and ffmpeg
 ffmpeg -i input.mp3 -f mp3 -b:a 128k - | \
   curl -X SOURCE \
+  -u admin:password \
   -H "Content-Type: audio/mpeg" \
   --data-binary @- \
   http://localhost:8001/
@@ -161,64 +166,21 @@ ffmpeg -i input.mp3 -f mp3 -b:a 128k - | \
 - Accept audio from DJ apps, ffmpeg, OBS Studio, and standard Icecast source clients
 - Automatic failover to file playlist when source disconnects
 - Broadcast live audio to all connected listeners
+- Pass matching MP3 sources through unchanged and automatically convert incompatible MP3 or non-MP3 sources to the configured format
 - Full HTTP compatibility
+- Keep existing listener connections open while switching between files and live input
 
 For detailed setup instructions and examples, see [ICECAST_SOURCE_GUIDE.md](release/ICECAST_SOURCE_GUIDE.md).
 
 #### Testing Icecast Connection
 
-Use the provided test scripts to verify your setup:
+Use the FFmpeg and `curl` example above, or configure an Icecast 2 source in Mixxx with mount `/live`, the source port, and the configured credentials.
 
-**Linux/macOS:**
-```bash
-./release/test-icecast-source.sh localhost 8001 your_audio.mp3
-```
+### Legacy Cache Options
 
-**Windows (PowerShell):**
-```powershell
-.\release\test-icecast-source.ps1 localhost 8001 your_audio.mp3
-```
-
-**Windows (Batch):**
-```cmd
-release\test-icecast-source.bat localhost 8001 your_audio.mp3
-```
-
-### Cache Management
-
-GoStream includes automatic cache cleanup to prevent unlimited disk usage when audio normalization is enabled.
-
-#### How Cache Cleanup Works
-
-- **Automatic Cleanup** - Runs every 5 minutes to remove expired cache files
-- **Time-Based Expiry** - Files older than `cache_ttl_minutes` are automatically deleted
-- **Default TTL** - 10 minutes (configurable)
-- **Intelligent Logging** - Shows when and how much space is freed
-
-#### Configuration Examples
-
-```json
-{
-  "normalize": true,
-  "cache_ttl_minutes": 10,
-  "cache_dir": ".cache"
-}
-```
-
-#### Cache Cleanup Scenarios
-
-| TTL Setting | Behavior | Use Case |
-|---|---|---|
-| `cache_ttl_minutes: 0` | Cleanup disabled | Persistent cache, manual removal |
-| `cache_ttl_minutes: 5` | Files expire after 5 min | Low disk space scenarios |
-| `cache_ttl_minutes: 10` | Files expire after 10 min | **Default, recommended** |
-| `cache_ttl_minutes: 60` | Files expire after 1 hour | High performance, more disk usage |
-
-**Example Log Output:**
-```
-Cache cleanup routine started (TTL: 10 minutes, check interval: 5 minutes)
-Cache cleanup: Deleted 3 files, freed 8.45 MB
-```
+`cache_dir` and `cache_ttl_minutes` are retained for configuration compatibility
+with the older frame reader. The continuous stream engine decodes source files
+directly and does not create normalized file caches.
 
 ### Examples
 
@@ -246,6 +208,105 @@ Cache cleanup: Deleted 3 files, freed 8.45 MB
 
 # All features enabled (command-line)
 ./gostream -d /music -p 8080 -r -n "My Station" -debug -gap 500
+```
+
+### Systemd Service Registration (Linux)
+
+GoStream can be registered as a systemd service to start automatically on boot and run continuously in the background.
+
+#### Prerequisites
+
+- Linux system with systemd
+- GoStream binary compiled and available
+- Root access (sudo) for installation
+
+#### Register as Systemd Service
+
+```bash
+sudo ./gostream -c config.json -register
+```
+
+This command will:
+- Validate the config file exists
+- Create `/etc/systemd/system/gostream.service` 
+- Enable the service on system boot
+- Start the service immediately
+- Display the service status and useful commands
+
+#### Service Management
+
+After registration, manage the service using standard systemd commands:
+
+```bash
+# Check service status
+sudo systemctl status gostream
+
+# Start/stop the service
+sudo systemctl start gostream
+sudo systemctl stop gostream
+
+# Restart the service
+sudo systemctl restart gostream
+
+# View real-time logs
+sudo journalctl -u gostream -f
+
+# View recent logs
+sudo journalctl -u gostream -n 50
+
+# Check if service is enabled on boot
+sudo systemctl is-enabled gostream
+
+# Disable/enable on boot
+sudo systemctl disable gostream
+sudo systemctl enable gostream
+```
+
+#### Requirements
+
+- The `-c` flag (config file) is mandatory when using `-register`
+- Must run with `sudo` privileges
+- The service will run as the user that executed the registration command
+
+#### Example Service File
+
+The registration creates a systemd service file at `/etc/systemd/system/gostream.service`:
+
+```ini
+[Unit]
+Description=GoStream Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/path/to/gostream
+ExecStart="/path/to/gostream" -c "/path/to/config.json"
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+
+LimitNOFILE=65535
+LimitNPROC=65535
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gostream
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### Uninstalling the Service
+
+To remove the systemd service:
+
+```bash
+sudo systemctl stop gostream
+sudo systemctl disable gostream
+sudo rm /etc/systemd/system/gostream.service
+sudo systemctl daemon-reload
 ```
 
 ## API Endpoints
@@ -458,7 +519,7 @@ curl http://localhost:8090/info
 - MP3 files in the specified directory
 - FFmpeg (either bundled in `ffmpeg/` folder OR available in system PATH)
 
-**Audio normalization is always enabled**, so FFmpeg is required:
+FFmpeg is required for file playback and for live sources that cannot use direct MP3 passthrough:
 - **Windows & Linux:** Bundled FFmpeg binaries are included in the `ffmpeg/` folder
 - **macOS or custom:** Ensure FFmpeg is installed and available in system PATH
   - Install via Homebrew: `brew install ffmpeg`

@@ -72,6 +72,7 @@ Example usage:
 - **Example**: `"icecast_source_port": 8001`
 - **Notes**: 
   - Requires a separate port from the main streaming port
+  - Binds to the configured `host`, just like the main HTTP server
   - Security: Use firewall rules to restrict access if on a public network
   - Only one source can be active at a time
   - For detailed setup instructions, see [ICECAST_SOURCE_GUIDE.md](ICECAST_SOURCE_GUIDE.md)
@@ -83,26 +84,36 @@ Example usage:
 ### standard_bitrate
 - **Type**: `string`
 - **Default**: `"128k"`
-- **Description**: Target bitrate for normalized audio. Used when `normalize` is true
+- **Description**: Station MP3 bitrate. Files and incompatible live sources are encoded to this bitrate; a matching live MP3 source is passed through unchanged
 - **Example**: `"standard_bitrate": "128k"`
 
 ### standard_sample_rate
 - **Type**: `string`
 - **Default**: `"44100"`
-- **Description**: Target sample rate for normalized audio in Hz. Used when `normalize` is true
+- **Description**: Station sample rate. It is also used when deciding whether a live MP3 can bypass transcoding
 - **Example**: `"standard_sample_rate": "44100"`
 
 ### cache_dir
 - **Type**: `string`
 - **Default**: `".cache"`
-- **Description**: Directory where normalized audio files are cached
+- **Description**: Deprecated compatibility option from the legacy reader; the continuous stream engine does not create normalized file caches
 - **Example**: `"cache_dir": ".cache"`
 
 ### cache_ttl_minutes
 - **Type**: `int`
 - **Default**: `10`
-- **Description**: Cache expiration time in minutes. Set to 0 to disable cache cleanup
+- **Description**: Deprecated compatibility option from the legacy reader
 - **Example**: `"cache_ttl_minutes": 60`
+
+---
+
+## Authentication
+
+### username / password
+- **Type**: `string`
+- **Default**: empty (authentication disabled)
+- **Description**: Shared HTTP Basic Authentication credentials for administrative API endpoints and Icecast source clients
+- **Important**: Set both values or leave both empty. GoStream refuses to start with only one value configured. Basic Authentication is not encrypted; use a trusted network, firewall, VPN, or TLS reverse proxy.
 
 ---
 
@@ -151,7 +162,6 @@ Example usage:
   "random": true,
   "debug": false,
   "gap_ms": 500,
-  "normalize": true,
   "standard_bitrate": "128k",
   "standard_sample_rate": "44100",
   "cache_dir": ".cache",
@@ -160,7 +170,10 @@ Example usage:
   "url": "https://example.com",
   "notice1": "Stream powered by GoStream<BR>",
   "notice2": "Enjoy the music!<BR>",
-  "meta_interval": 8192
+  "meta_interval": 8192,
+  "username": "admin",
+  "password": "change-me",
+  "icecast_source_port": 8001
 }
 ```
 
@@ -178,8 +191,8 @@ Example usage:
 
 Once configured and running, GoStream provides several endpoints:
 
-- `/fm` - Stream endpoint (audio/mpeg)
-- `/server-info` - Server information and current song
+- `/` or `/stream.mp3` - Stream endpoint (audio/mpeg)
+- `/info` - Server information and current song
 - `/stats` - Stream statistics (Icecast compatible format)
 - `/status` - Current stream status
 - `/skip` - Skip to next song
