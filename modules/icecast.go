@@ -2,13 +2,18 @@ package modules
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
+	"net/http/httputil"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dmulholl/mp3lib"
 )
 
 // AudioBuffer is a simple channel-based buffer for managing audio data
@@ -16,6 +21,7 @@ type AudioBuffer struct {
 	ch       chan []byte
 	isActive bool
 	mu       sync.Mutex
+	probe    []byte
 }
 
 // NewAudioBuffer creates a new audio buffer
@@ -36,16 +42,27 @@ func NewAudioBuffer(maxSize int) *AudioBuffer {
 
 // Write adds data to the buffer (tries hard not to drop, but will if buffer backs up)
 func (ab *AudioBuffer) Write(data []byte) (int, error) {
+	// The source connection reuses its socket read buffer. Queue an owned copy
+	// so a later Read cannot overwrite MP3 bytes that are still waiting here.
+	owned := append([]byte(nil), data...)
+
 	ab.mu.Lock()
 	defer ab.mu.Unlock()
 
 	if !ab.isActive {
 		return 0, fmt.Errorf("buffer closed")
 	}
+	if len(ab.probe) < 64*1024 {
+		remaining := 64*1024 - len(ab.probe)
+		if remaining > len(owned) {
+			remaining = len(owned)
+		}
+		ab.probe = append(ab.probe, owned[:remaining]...)
+	}
 
 	// Try to send, non-blocking first
 	select {
-	case ab.ch <- data:
+	case ab.ch <- owned:
 		return len(data), nil
 	default:
 		// Buffer full, try to make room by draining up to 3 chunks
@@ -54,7 +71,7 @@ func (ab *AudioBuffer) Write(data []byte) (int, error) {
 			case <-ab.ch:
 				// Made room, try again
 				select {
-				case ab.ch <- data:
+				case ab.ch <- owned:
 					return len(data), nil
 				default:
 					// Still full, continue trying to drain
@@ -70,6 +87,12 @@ func (ab *AudioBuffer) Write(data []byte) (int, error) {
 		Logger.Debug("Icecast buffer persistently full, dropping chunk")
 		return len(data), nil
 	}
+}
+
+func (ab *AudioBuffer) ProbeBytes() []byte {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+	return append([]byte(nil), ab.probe...)
 }
 
 // ReadTimeout retrieves data from buffer with timeout
@@ -128,6 +151,13 @@ type IcecastSourceServer struct {
 	bytesReceived    int64
 	bytesSent        int64
 	sourceGeneration uint64
+}
+
+func icecastBodyReader(reader *bufio.Reader, headers map[string]string) io.Reader {
+	if strings.Contains(strings.ToLower(headers["transfer-encoding"]), "chunked") {
+		return httputil.NewChunkedReader(reader)
+	}
+	return reader
 }
 
 // IcecastSourceInstance is the singleton instance
@@ -311,15 +341,17 @@ func (s *IcecastSourceServer) handleSource(conn net.Conn) {
 
 	// Send success response
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
-	Logger.Info(fmt.Sprintf("Icecast source from %s accepted (content-type: %s)", remoteAddr, contentType))
+	transferEncoding := headers["transfer-encoding"]
+	Logger.Info(fmt.Sprintf("Icecast source from %s accepted (content-type: %s, transfer-encoding: %s)", remoteAddr, contentType, transferEncoding))
 
 	// Read and buffer audio data
+	bodyReader := icecastBodyReader(reader, headers)
 	buffer := make([]byte, 4096)
 	for {
 		// A source that disappears without a clean TCP close must not leave the
 		// station stuck in live mode indefinitely.
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		n, err := reader.Read(buffer)
+		n, err := bodyReader.Read(buffer)
 		if err != nil {
 			Logger.Info(fmt.Sprintf("Icecast source from %s disconnected", remoteAddr))
 			s.mu.Lock()
@@ -429,6 +461,37 @@ func (s *IcecastSourceServer) GetSourceGeneration() uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.sourceGeneration
+}
+
+// IsMP3Source reports whether the active source can be forwarded directly to
+// listeners without decoding or re-encoding.
+func (s *IcecastSourceServer) IsMP3Source() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(s.sourceMetadata["content-type"], ";", 2)[0]))
+	return mediaType == "audio/mpeg" || mediaType == "audio/mp3"
+}
+
+// MP3MatchesConfiguredOutput inspects the first complete MP3 frame without
+// consuming source bytes. ready is false until enough source data has arrived
+// to make a routing decision.
+func (s *IcecastSourceServer) MP3MatchesConfiguredOutput() (matches, ready bool) {
+	s.mu.RLock()
+	buffer := s.audioBuffer
+	s.mu.RUnlock()
+	if buffer == nil {
+		return false, false
+	}
+	probe := buffer.ProbeBytes()
+	frame := mp3lib.NextFrame(bytes.NewReader(probe))
+	if frame == nil {
+		return false, len(probe) >= 64*1024
+	}
+	channels := 2
+	if frame.ChannelMode == mp3lib.Mono {
+		channels = 1
+	}
+	return frame.BitRate == configuredBitrateBps() && frame.SamplingRate == configuredSampleRate() && channels == pcmChannels, true
 }
 
 // BufferSize returns the current number of bytes in the audio buffer

@@ -37,8 +37,10 @@ type IMusicReader struct {
 	BufferStoreKey string
 	InfoStoreKey   string
 
-	Lock     sync.RWMutex
-	FileLock sync.Mutex // Serializes file reads, closes, skips, and track changes.
+	Lock            sync.RWMutex
+	FileLock        sync.Mutex // Serializes file reads, closes, skips, and track changes.
+	BufferHistoryMu sync.RWMutex
+	BufferHistory   map[int][]byte
 
 	// Icecast mode support
 	IsIcecastMode bool
@@ -78,6 +80,7 @@ var MusicReader = IMusicReader{
 	IsIcecastMode: false,
 	IcecastChunks: make(chan []byte, 100), // Buffer up to 100 chunks (400KB at 4KB per chunk)
 	IcecastStopCh: make(chan struct{}),
+	BufferHistory: make(map[int][]byte),
 }
 
 type IMusicReaderStoreData struct {
@@ -456,7 +459,37 @@ func (musicReader *IMusicReader) SetInfoStoreData(data IMusicInfoStoreData) {
 }
 
 func (musicReader *IMusicReader) SetBufferStoreData(data IMusicReaderStoreData) {
+	if len(data.UnitBuffer) > 0 && data.Order > 0 {
+		musicReader.BufferHistoryMu.Lock()
+		if musicReader.BufferHistory == nil {
+			musicReader.BufferHistory = make(map[int][]byte)
+		}
+		musicReader.BufferHistory[data.Order] = append([]byte(nil), data.UnitBuffer...)
+		delete(musicReader.BufferHistory, data.Order-512)
+		musicReader.BufferHistoryMu.Unlock()
+	}
 	musicReader.Store.Store(musicReader.BufferStoreKey, data)
+}
+
+// GetBufferUnitsAfter returns every published unit after the listener's last
+// observed order. Keeping a short history prevents bursty live publishing from
+// overwriting MP3 bytes before a listener's polling loop sees them.
+func (musicReader *IMusicReader) GetBufferUnitsAfter(after, through int) ([]byte, bool) {
+	if through <= after {
+		return nil, true
+	}
+	musicReader.BufferHistoryMu.RLock()
+	defer musicReader.BufferHistoryMu.RUnlock()
+
+	var combined []byte
+	for order := after + 1; order <= through; order++ {
+		unit, ok := musicReader.BufferHistory[order]
+		if !ok {
+			return nil, false
+		}
+		combined = append(combined, unit...)
+	}
+	return combined, true
 }
 
 func (musicReader *IMusicReader) GetCurrentSongHash() string {

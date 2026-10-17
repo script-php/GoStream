@@ -7,13 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
 	pcmChannels       = 2
-	pcmBytesPerSample = 2 // signed 16-bit little endian
+	pcmBytesPerSample = 4 // 32-bit float preserves MP3 decoder overshoot
 	pcmTickDuration   = 20 * time.Millisecond
+	livePrebufferTime = 250 * time.Millisecond
+	liveUnderrunWait  = 80 * time.Millisecond
+	encoderHeadroom   = "-2dB"
 )
 
 // ContinuousStreamEngine owns the station's single, persistent MP3 encoder.
@@ -33,6 +37,11 @@ type ContinuousStreamEngine struct {
 	skipCh chan struct{}
 	stop   sync.Once
 	wg     sync.WaitGroup
+
+	publishMu          sync.Mutex
+	publishRolling     []byte
+	publishOrder       int
+	liveMP3Passthrough atomic.Bool
 }
 
 var StreamEngine *ContinuousStreamEngine
@@ -47,9 +56,11 @@ type pcmProcess struct {
 }
 
 type pcmSourceState struct {
-	process *pcmProcess
-	queued  []byte
-	closed  bool
+	process        *pcmProcess
+	queued         []byte
+	closed         bool
+	prebufferBytes int
+	ready          bool
 }
 
 func configuredSampleRate() int {
@@ -92,11 +103,12 @@ func NewContinuousStreamEngine() (*ContinuousStreamEngine, error) {
 func (engine *ContinuousStreamEngine) Start() error {
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
-		"-f", "s16le",
+		"-f", "f32le",
 		"-ar", strconv.Itoa(engine.sampleRate),
 		"-ac", strconv.Itoa(pcmChannels),
 		"-i", "pipe:0",
 		"-map_metadata", "-1",
+		"-af", "volume=" + encoderHeadroom,
 		"-c:a", "libmp3lame",
 		"-b:a", Config.StandardBitrate,
 		"-ar", strconv.Itoa(engine.sampleRate),
@@ -175,7 +187,7 @@ func (engine *ContinuousStreamEngine) startPCMProcess(inputPath string, live boo
 	}
 	args = append(args,
 		"-vn", "-map_metadata", "-1",
-		"-f", "s16le", "-c:a", "pcm_s16le",
+		"-f", "f32le", "-c:a", "pcm_f32le",
 		"-ar", strconv.Itoa(engine.sampleRate),
 		"-ac", strconv.Itoa(pcmChannels),
 		"pipe:1",
@@ -256,23 +268,66 @@ func (process *pcmProcess) Stop() {
 	}
 }
 
-func (state *pcmSourceState) take(size int) ([]byte, bool) {
+func (state *pcmSourceState) take(size int, wait time.Duration) ([]byte, bool) {
 	if state == nil || state.process == nil {
 		return make([]byte, size), true
 	}
 
-drain:
-	for len(state.queued) < size && !state.closed {
+	target := size
+	if !state.ready && state.prebufferBytes > target {
+		target = state.prebufferBytes
+	}
+
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if wait > 0 {
+		timer = time.NewTimer(wait)
+		timeout = timer.C
+		defer timer.Stop()
+	}
+
+fill:
+	for len(state.queued) < target && !state.closed {
+		if wait == 0 {
+			select {
+			case chunk, ok := <-state.process.chunks:
+				if !ok {
+					state.closed = true
+					break fill
+				}
+				state.queued = append(state.queued, chunk...)
+			default:
+				break fill
+			}
+			continue
+		}
+
 		select {
 		case chunk, ok := <-state.process.chunks:
 			if !ok {
 				state.closed = true
-				break drain
+				break
 			}
 			state.queued = append(state.queued, chunk...)
-		default:
-			break drain
+		case <-timeout:
+			wait = 0
 		}
+	}
+
+	// A live decoder writes PCM in bursts rather than one exact 20 ms block at
+	// a time. Keep initial silence until the jitter buffer is ready instead of
+	// consuming a partial burst and inserting an audible zero-filled gap.
+	if !state.ready && state.prebufferBytes > 0 && len(state.queued) < state.prebufferBytes && !state.closed {
+		return make([]byte, size), false
+	}
+	state.ready = true
+
+	// Never splice silence after a partial PCM read. Pipe reads may stop in the
+	// middle of a float sample; copying those bytes and padding the rest with
+	// zeroes creates a malformed sample that is heard as a sharp scratch. Keep
+	// partial output queued until a complete tick is available instead.
+	if len(state.queued) < size && !state.closed {
+		return make([]byte, size), false
 	}
 
 	result := make([]byte, size)
@@ -302,7 +357,7 @@ func (engine *ContinuousStreamEngine) startFileSource() (*pcmSourceState, error)
 		MusicReader.SetInfoStoreData(*info)
 	}
 	Logger.Info(fmt.Sprintf("File PCM source started: %s", path))
-	return &pcmSourceState{process: process}, nil
+	return &pcmSourceState{process: process, ready: true}, nil
 }
 
 func (engine *ContinuousStreamEngine) startLiveSource(generation uint64) (*pcmSourceState, error) {
@@ -332,7 +387,69 @@ func (engine *ContinuousStreamEngine) startLiveSource(generation uint64) (*pcmSo
 	}()
 
 	Logger.Info("Live PCM decoder started")
-	return &pcmSourceState{process: process}, nil
+	prebufferBytes := engine.sampleRate * pcmChannels * pcmBytesPerSample * int(livePrebufferTime/time.Millisecond) / 1000
+	return &pcmSourceState{process: process, prebufferBytes: prebufferBytes}, nil
+}
+
+func (engine *ContinuousStreamEngine) publishUnit(unit []byte, timeout int) {
+	if len(unit) == 0 {
+		return
+	}
+	const rollingSize = 64 * 1024
+
+	engine.publishMu.Lock()
+	defer engine.publishMu.Unlock()
+	engine.publishRolling = append(engine.publishRolling, unit...)
+	if len(engine.publishRolling) > rollingSize {
+		engine.publishRolling = append([]byte(nil), engine.publishRolling[len(engine.publishRolling)-rollingSize:]...)
+	}
+	engine.publishOrder++
+	MusicReader.SetBufferStoreData(IMusicReaderStoreData{
+		InitialBuffer: append([]byte(nil), engine.publishRolling...),
+		UnitBuffer:    append([]byte(nil), unit...),
+		Timeout:       timeout,
+		Order:         engine.publishOrder,
+	})
+}
+
+// startLiveMP3Passthrough forwards the exact MP3 bytes supplied by Mixxx. It
+// publishes at most five times per second so the single-value listener store
+// cannot overwrite rapid source chunks before clients observe them.
+func (engine *ContinuousStreamEngine) startLiveMP3Passthrough(generation uint64) {
+	engine.liveMP3Passthrough.Store(true)
+	MusicReader.SetInfoStoreData(IMusicInfoStoreData{
+		Title:    "Live Stream",
+		Artist:   "Live",
+		Filename: "Live Stream",
+	})
+
+	go func() {
+		const publishInterval = 200 * time.Millisecond
+		lastPublish := time.Now()
+		var pending []byte
+
+		flush := func() {
+			if len(pending) == 0 {
+				return
+			}
+			engine.publishUnit(pending, 10)
+			pending = nil
+			lastPublish = time.Now()
+		}
+		defer flush()
+
+		for IcecastSource != nil && IcecastSource.HasActiveSource() && IcecastSource.GetSourceGeneration() == generation {
+			chunk, ok := IcecastSource.GetAudioChunk()
+			if ok {
+				pending = append(pending, chunk...)
+			}
+			if time.Since(lastPublish) >= publishInterval {
+				flush()
+			}
+		}
+	}()
+
+	Logger.Info("Live MP3 passthrough started (FFmpeg bypassed)")
 }
 
 func (engine *ContinuousStreamEngine) runSourceSelector() {
@@ -366,25 +483,42 @@ func (engine *ContinuousStreamEngine) runSourceSelector() {
 		case now := <-ticker.C:
 			liveActive := IcecastSource != nil && IcecastSource.HasActiveSource()
 			currentGeneration := uint64(0)
+			liveMP3 := false
+			liveFormatReady := true
+			liveMP3Matches := false
 			if liveActive {
 				currentGeneration = IcecastSource.GetSourceGeneration()
-			}
-
-			if liveActive && (mode != "live" || currentGeneration != liveGeneration) {
-				stopSource()
-				mode = "live"
-				liveGeneration = currentGeneration
-				engine.setLiveMode(true)
-				var err error
-				source, err = engine.startLiveSource(liveGeneration)
-				if err != nil {
-					Logger.Error(fmt.Sprintf("Failed to start live decoder: %v", err))
-					retryAfter = now.Add(time.Second)
+				liveMP3 = IcecastSource.IsMP3Source()
+				if liveMP3 {
+					liveMP3Matches, liveFormatReady = IcecastSource.MP3MatchesConfiguredOutput()
 				}
 			}
 
-			if !liveActive && mode == "live" {
+			if liveActive && liveFormatReady && (!strings.HasPrefix(mode, "live") || currentGeneration != liveGeneration) {
 				stopSource()
+				liveGeneration = currentGeneration
+				engine.setLiveMode(true)
+				engine.liveMP3Passthrough.Store(false)
+				if liveMP3 && liveMP3Matches {
+					mode = "live-mp3"
+					engine.startLiveMP3Passthrough(liveGeneration)
+				} else {
+					mode = "live-transcode"
+					var err error
+					source, err = engine.startLiveSource(liveGeneration)
+					if err != nil {
+						Logger.Error(fmt.Sprintf("Failed to start live decoder: %v", err))
+						retryAfter = now.Add(time.Second)
+					}
+					if liveMP3 {
+						Logger.Info("Live MP3 format differs from configured output - FFmpeg transcoding enabled")
+					}
+				}
+			}
+
+			if !liveActive && strings.HasPrefix(mode, "live") {
+				stopSource()
+				engine.liveMP3Passthrough.Store(false)
 				mode = "file"
 				engine.setLiveMode(false)
 				gapUntil = time.Time{}
@@ -398,7 +532,7 @@ func (engine *ContinuousStreamEngine) runSourceSelector() {
 
 			if source == nil && !now.Before(retryAfter) && !now.Before(gapUntil) {
 				var err error
-				if mode == "live" && liveActive {
+				if mode == "live-transcode" && liveActive {
 					source, err = engine.startLiveSource(liveGeneration)
 				} else if mode == "file" {
 					source, err = engine.startFileSource()
@@ -412,7 +546,11 @@ func (engine *ContinuousStreamEngine) runSourceSelector() {
 			pcm := make([]byte, bytesPerTick)
 			finished := false
 			if source != nil {
-				pcm, finished = source.take(bytesPerTick)
+				wait := time.Duration(0)
+				if mode == "live-transcode" {
+					wait = liveUnderrunWait
+				}
+				pcm, finished = source.take(bytesPerTick, wait)
 			}
 			if _, err := engine.encoderInput.Write(pcm); err != nil {
 				Logger.Error(fmt.Sprintf("Persistent encoder input failed: %v", err))
@@ -434,12 +572,8 @@ func (engine *ContinuousStreamEngine) publishEncoderOutput() {
 	if unitSize < 4096 {
 		unitSize = 4096
 	}
-	const rollingSize = 64 * 1024
-
 	readBuffer := make([]byte, 16*1024)
 	var pending []byte
-	var rolling []byte
-	order := 0
 
 	for {
 		n, err := engine.encoderOut.Read(readBuffer)
@@ -448,17 +582,9 @@ func (engine *ContinuousStreamEngine) publishEncoderOutput() {
 			for len(pending) >= unitSize {
 				unit := append([]byte(nil), pending[:unitSize]...)
 				pending = pending[unitSize:]
-				rolling = append(rolling, unit...)
-				if len(rolling) > rollingSize {
-					rolling = append([]byte(nil), rolling[len(rolling)-rollingSize:]...)
+				if !engine.liveMP3Passthrough.Load() {
+					engine.publishUnit(unit, unitSize*8*1000/engine.bitrateBps)
 				}
-				order++
-				MusicReader.SetBufferStoreData(IMusicReaderStoreData{
-					InitialBuffer: append([]byte(nil), rolling...),
-					UnitBuffer:    unit,
-					Timeout:       unitSize * 8 * 1000 / engine.bitrateBps,
-					Order:         order,
-				})
 			}
 		}
 		if err != nil {
